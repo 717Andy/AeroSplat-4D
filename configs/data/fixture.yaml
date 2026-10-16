@@ -1,0 +1,9 @@
+# @package data
+source: canonical
+root: fixtures/tiny_rig
+load_depth: true
+sync:
+  policy: interpolate_pose
+  reference_camera: front
+  max_image_dt: 0.15
+  require_all_cameras: true

@@ -1,0 +1,24 @@
+# @package data
+source: tartanair
+# Point this at a trajectory directory (…/P000) or a parent that contains them.
+root: data/tartanair
+load_depth: true
+# TartanAir trajectories have no capture clock. Frame i is assigned time i / fps.
+fps: 10.0
+# Official 640x480 pinhole. Scaled if a frame's resolution differs.
+intrinsics:
+  width: 640
+  height: 480
+  fx: 320.0
+  fy: 320.0
+  cx: 320.0
+  cy: 240.0
+# Used only when pose_right.txt is absent. Authors place the right camera 0.25 m
+# to the right of the left camera in the AirSim camera frame.
+stereo_baseline_m: 0.25
+depth_kind: planar_z
+sync:
+  policy: nearest
+  reference_camera: left
+  max_image_dt: 1.0e-6
+  require_all_cameras: true

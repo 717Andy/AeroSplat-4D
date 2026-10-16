@@ -1,0 +1,10 @@
+{
+  "format": "aerosplat.multicam.v1",
+  "world_frame": "enu_z_up",
+  "camera_frame": "opencv",
+  "extrinsics": "world_to_camera",
+  "depth_kind": "planar_z",
+  "scenes": [
+    "flight0"
+  ]
+}

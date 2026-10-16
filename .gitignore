@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+dist/
+build/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.hydra/
+outputs/
+*.npy
+!fixtures/**/*.npy
+.venv/
+venv/
+.DS_Store

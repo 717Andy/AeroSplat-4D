@@ -1,0 +1,46 @@
+# @package rig
+# Four-camera UAM rig in the AirSim/Colosseum body frame:
+#   +X forward, +Y right, +Z down. Angles are degrees.
+#   yaw > 0 rotates the camera toward the vehicle's right.
+#   pitch > 0 rotates the camera upward. Straight down is pitch -90.
+# Intrinsics are derived from horizontal FOV (square pixels), matching AirSim.
+name: uam_quad
+vehicle_name: Drone1
+fov_degrees: 90.0
+cameras:
+  front:
+    x: 0.30
+    y: 0.00
+    z: 0.05
+    pitch: 0.0
+    roll: 0.0
+    yaw: 0.0
+    width: 1280
+    height: 720
+  down:
+    x: 0.00
+    y: 0.00
+    z: 0.10
+    pitch: -90.0
+    roll: 0.0
+    yaw: 0.0
+    width: 640
+    height: 480
+  port:
+    x: 0.00
+    y: -0.10
+    z: 0.05
+    pitch: 0.0
+    roll: 0.0
+    yaw: -90.0
+    width: 960
+    height: 720
+  starboard:
+    x: 0.00
+    y: 0.10
+    z: 0.05
+    pitch: 0.0
+    roll: 0.0
+    yaw: 90.0
+    width: 960
+    height: 720

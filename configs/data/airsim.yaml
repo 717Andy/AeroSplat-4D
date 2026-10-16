@@ -1,0 +1,20 @@
+# @package data
+# Canonical recordings written by scripts/capture_colosseum_rig.py.
+# Set source: airsim_raw to parse a legacy airsim_rec.txt + settings.json instead.
+source: canonical
+root: data/colosseum/flight
+load_depth: true
+sync:
+  policy: interpolate_pose
+  reference_camera: front
+  max_image_dt: 0.05
+  require_all_cameras: true
+airsim_raw:
+  recording: data/colosseum/flight/airsim_rec.txt
+  settings: configs/rig/colosseum_settings.json
+  # Colosseum/AirSim TimeStamp is a nanosecond clock. Use "seconds" only for
+  # recordings that were already converted.
+  timestamp_unit: nanoseconds
+  image_types:
+    rgb: scene
+    depth: depth_planar

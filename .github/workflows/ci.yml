@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install CPU PyTorch
+        # CPU wheels only. diff-gaussian-rasterization is a Phase 4 CUDA
+        # extension and is intentionally not installed or compiled here.
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Install AeroSplat and dev tools
+        # --no-deps keeps pip from replacing the CPU torch wheel with a CUDA build.
+        run: |
+          pip install numpy pyyaml omegaconf hydra-core pillow pytest ruff matplotlib
+          pip install -e . --no-deps
+
+      - name: Confirm this job did not build a CUDA rasterizer
+        run: |
+          python - <<'PY'
+          import torch
+          print("torch", torch.__version__, "cuda", torch.version.cuda)
+          if torch.version.cuda:
+              raise SystemExit("CI expected a CPU torch build")
+          PY
+
+      - name: Lint
+        run: |
+          ruff check .
+          ruff format --check .
+
+      - name: Test
+        run: pytest
+        env:
+          MPLBACKEND: Agg
