@@ -6,10 +6,12 @@ Internal contract
 * Camera frame: OpenCV (X right, Y down, Z forward).
 * Extrinsics on every sample are world-to-camera: ``X_cam = R @ X_world + t``.
 
-AirSim, Colosseum, and TartanAir do not use that pair of frames. They use a
-NED world (X north, Y east, Z down) and a camera frame with X forward, Y
-right, Z down. Loading those datasets without this conversion makes depth
-unprojection disagree with the rasterizer, which expects OpenCV cameras.
+AirSim, Colosseum, Cosys-AirSim, and TartanAir use a different pair of frames:
+NED world (X north, Y east, Z down) and a camera with X forward, Y right, Z
+down. Loading those datasets without this conversion makes depth unprojection
+disagree with the rasterizer, which expects OpenCV cameras. Cosys-AirSim shares
+this body-mounted conversion. Its ``External`` cameras use Unreal coordinates
+and are rejected by the loader.
 
 Quaternion layout in this module is wxyz. TartanAir files store xyzw; the
 adapter swaps before calling into here. AirSim recordings store wxyz.

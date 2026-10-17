@@ -1,7 +1,7 @@
 """Image and depth decoding.
 
 Depth is returned in meters as float32 HxW. Zero and negative values mean
-"no return" for every writer in this repo (fixture, Colosseum capture).
+"no return" for every writer in this repo (fixture, AirSim-family capture).
 """
 
 from __future__ import annotations

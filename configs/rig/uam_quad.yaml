@@ -1,9 +1,10 @@
 # @package rig
-# Four-camera UAM rig in the AirSim/Colosseum body frame:
+# Four-camera UAM rig in the AirSim-family body frame (Colosseum and Cosys-AirSim):
 #   +X forward, +Y right, +Z down. Angles are degrees.
 #   yaw > 0 rotates the camera toward the vehicle's right.
 #   pitch > 0 rotates the camera upward. Straight down is pitch -90.
 # Intrinsics are derived from horizontal FOV (square pixels), matching AirSim.
+# Keep External false. Cosys External cameras are posed in Unreal world, not this body frame.
 name: uam_quad
 vehicle_name: Drone1
 fov_degrees: 90.0

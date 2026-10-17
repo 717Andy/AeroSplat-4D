@@ -1,0 +1,111 @@
+{
+  "SettingsVersion": 2.0,
+  "SimMode": "Multirotor",
+  "ViewMode": "FlyWithMe",
+  "MoveWorldOrigin": false,
+  "InitialInstanceSegmentation": true,
+  "Vehicles": {
+    "Drone1": {
+      "VehicleType": "SimpleFlight",
+      "AutoCreate": true,
+      "Cameras": {
+        "front": {
+          "CaptureSettings": [
+            {
+              "ImageType": 0,
+              "Width": 1280,
+              "Height": 720,
+              "FOV_Degrees": 90.0
+            },
+            {
+              "ImageType": 1,
+              "Width": 1280,
+              "Height": 720,
+              "FOV_Degrees": 90.0
+            }
+          ],
+          "X": 0.3,
+          "Y": 0.0,
+          "Z": 0.05,
+          "Pitch": 0.0,
+          "Roll": 0.0,
+          "Yaw": 0.0,
+          "External": false,
+          "ExternalLocal": false
+        },
+        "down": {
+          "CaptureSettings": [
+            {
+              "ImageType": 0,
+              "Width": 640,
+              "Height": 480,
+              "FOV_Degrees": 90.0
+            },
+            {
+              "ImageType": 1,
+              "Width": 640,
+              "Height": 480,
+              "FOV_Degrees": 90.0
+            }
+          ],
+          "X": 0.0,
+          "Y": 0.0,
+          "Z": 0.1,
+          "Pitch": -90.0,
+          "Roll": 0.0,
+          "Yaw": 0.0,
+          "External": false,
+          "ExternalLocal": false
+        },
+        "port": {
+          "CaptureSettings": [
+            {
+              "ImageType": 0,
+              "Width": 960,
+              "Height": 720,
+              "FOV_Degrees": 90.0
+            },
+            {
+              "ImageType": 1,
+              "Width": 960,
+              "Height": 720,
+              "FOV_Degrees": 90.0
+            }
+          ],
+          "X": 0.0,
+          "Y": -0.1,
+          "Z": 0.05,
+          "Pitch": 0.0,
+          "Roll": 0.0,
+          "Yaw": -90.0,
+          "External": false,
+          "ExternalLocal": false
+        },
+        "starboard": {
+          "CaptureSettings": [
+            {
+              "ImageType": 0,
+              "Width": 960,
+              "Height": 720,
+              "FOV_Degrees": 90.0
+            },
+            {
+              "ImageType": 1,
+              "Width": 960,
+              "Height": 720,
+              "FOV_Degrees": 90.0
+            }
+          ],
+          "X": 0.0,
+          "Y": 0.1,
+          "Z": 0.05,
+          "Pitch": 0.0,
+          "Roll": 0.0,
+          "Yaw": 90.0,
+          "External": false,
+          "ExternalLocal": false
+        }
+      }
+    }
+  }
+}
