@@ -1,9 +1,10 @@
 # Architecture
 
 AeroSplat-4D is a feedforward model: one pass over a synchronized multi-camera
-rig predicts a 4D Gaussian cloud. Phase 1 is the data contract that later phases
-read. The network, the CUDA rasterizer, and the losses are specified here and
-stubbed in `aerosplat.models`. They are not implemented.
+rig predicts a 4D Gaussian cloud. Phase 1 is the data contract. Phase 2 is the
+shared ViT and the plane-sweep lift that turns it into per-pixel features and
+flight-frame anchors. The splat heads, the CUDA rasterizer, and the losses are
+still stubs in `aerosplat.models`.
 
 ```
 N camera frames (image, K, R|t, time, optional depth)
@@ -115,9 +116,105 @@ slices. Tests check that the names and the slices add up to 62.
 | Relight | 5 | glare residual RGB | no; consumes SH |
 | Occupancy | 5 | local voxel logits | no; supervised by the cache |
 
-Stubs live in `aerosplat.models.heads` and `aerosplat.models.backbone`. Calling
-them raises `NotImplementedError`. `GaussianRasterizer` checks the packed shape
-and then raises. It does not import a CUDA extension.
+Phase 3 and Phase 5 heads still raise `NotImplementedError`. `GaussianRasterizer`
+checks the packed shape and then raises. It does not import a CUDA extension.
+The Phase 2 modules below are implemented.
+
+## Phase 2
+
+`MultiViewLifter` is the call Phase 3 should make. It returns a `LiftedGeometry`:
+
+* per camera, a feature map, a depth distribution over planes, the expected
+  planar depth, and the flight-frame points those depths unproject to
+* `anchors` `[B, N, 3]` and `anchor_features` `[B, N, C]`, the same `N` a
+  geometry head would use if it emitted one Gaussian per anchor
+* `gaussian_xyz()` is the slice that packs into `GaussianLayout.XYZ`. The other
+  59 channels are not filled here
+
+`N` is still not fixed by the spec. It is the number of lift-grid cells across
+the rig. Phase 3 can subsample it. The lifter does not pad and does not emit
+opacity, scale, quaternion, SH, or velocity.
+
+### Backbone
+
+One ViT, shared across every camera. The block names match DINOv2
+(`patch_embed.proj`, `blocks.*.attn.qkv`, `blocks.*.mlp.fc1`, LayerScale
+`ls1` / `ls2`) and the CroCo encoder used by DUSt3R and MASt3R (`enc_blocks`
+is renamed on load). `aerosplat.models.pretrained` copies any key whose shape
+matches and skips the rest, including the DUSt3R decoder. A different
+`pos_embed` grid is interpolated. Nothing is downloaded unless
+`pretrained_allow_download` is set. CI does not download weights.
+
+Configs:
+
+| config | width | laptop note |
+| --- | --- | --- |
+| `vit_small` | ViT-S/14, dim 384 | 8 GB target at 224px, batch 1, 4 cameras, gradient checkpointing. 16 GB has room for 336px. |
+| `vit_base` | ViT-B/14, dim 768 | 16 GB target at 224px. Does not fit 8 GB. |
+| `vit_large` | ViT-L/16, dim 1024, depth 24 | Matches aerial DUSt3R / MASt3R. Above an 8–16 GB laptop for unfrozen 4-camera training. |
+| `vit_tiny` | dim 32, 2 blocks | CPU fixture and tests only. |
+
+Do not train at 1080p on the laptop. The render benchmark measures the
+simulator at 1080p and 720p. That is a different number from training VRAM.
+
+Cross-view attention is a short stack over the concatenated patch tokens.
+There is no learned camera index. Permuting the cameras permutes the tokens.
+Images must be a multiple of the patch size. `prepare_rig` resizes and pads.
+
+### Pose
+
+Each patch token gets a Plücker ray in the flight frame, `(direction, origin ×
+direction)`, from `K` and `R|t`. Optionally a sinusoidal embedding of the
+flattened intrinsics and extrinsics is added as a per-camera bias. The last
+linear layers are zero-initialized on `vit_small` and `vit_base` so a loaded
+encoder does not move until those layers train.
+
+### Why a plane sweep
+
+The spec allows a cost volume or a frustum projection. The lift does both
+jobs, in that order. A plane sweep warps the other cameras onto hypothesized
+depths with the known calibration and scores the match. That is the part that
+uses overlap. A frustum head that only regresses a depth along a ray never
+looks at the other view, so it cannot be checked on the fixture without
+training, and it ignores the extrinsics Phase 1 exists to get right.
+
+The sweep assumes fronto-parallel planes in the reference camera. That is the
+MVSNet hypothesis. It is approximate on slanted walls and on this rig, whose
+side cameras sit about 90° off the nose, so their overlap with the nose is a
+grazing band. The photometric cost is the initialization. A 1×1 convolution
+from the ViT features adds a residual on the depth logits (`match="hybrid"`),
+which is what the depth-pretraining loop updates. `match="photometric"` leaves
+the residual off.
+
+The mode of the cost is the geometric readout. The expected depth is the mean
+of the softmax and is only sharp when the surface is textured. The fixture's
+own albedo is flat on each face, so the correctness test re-renders the
+fixture boxes from the front pose and a 0.5 m stereo partner and paints a
+world-locked texture. On the mutually visible pixels the mode is within a
+fraction of a meter of the fixture depth.
+
+Unprojection of that depth with the capture `R|t` is the frustum step. The
+points are in the flight frame. A rigid motion of the whole flight frame
+leaves the camera-frame depth unchanged and moves the points with the frame,
+because the cost depends only on relative pose.
+
+### Pretraining data
+
+Stage 1 is static multi-view depth, not the 4D rig. Loaders, all of them
+returning OpenCV world-to-camera in meters (the flight-frame `R|t`; the OpenCV
+cam2world 4×4 is the inverse):
+
+| source | config | what the loader fixes |
+| --- | --- | --- |
+| tiny fixture | `data=fixture` | already in the flight frame |
+| TartanAir V2 | `data=tartanair_v2` | NED + AirSim camera via the V1 conversion. Depth is float32-in-RGBA PNG, meters. |
+| AerialMegaDepth | `data=aerial_megadepth` | COLMAP OpenCV w2c, or a `cam2world` npz / `views.json`. Depth treated as meters. |
+| MatrixCity aerial | `data=matrixcity` | NeRF axes to OpenCV. Per-block rotation ×100. EXR Z-depth centimeters → meters (`/ 100`, not the official `/ 10000` which lands in units of 100 m). |
+
+`scripts/pretrain_depth.py` runs the depth loop. Its default is `vit_tiny` on
+the fixture, on CPU: L1 on the expected depth plus a cross-entropy onto the
+nearest plane. Invalid depth (0) is masked. That script is the smoke test, not
+a trained model.
 
 ### Thin structure
 
@@ -202,7 +299,7 @@ compile either extension.
 | Phase | Status | What it adds |
 | --- | --- | --- |
 | 1 Foundation, ingestion, calibration | this tree | schema, sync, Colosseum + Cosys-AirSim + TartanAir + fixture, occupancy cache, tensor contract |
-| 2 ViT and 2D-to-3D lift | stubbed | shared backbone, pose tokens, cost volume |
+| 2 ViT and 2D-to-3D lift | this tree | shared ViT, pose tokens, plane-sweep lift, depth pretrain |
 | 3 Splat parameter heads | stubbed | geometry, appearance, dynamics, pack into `[B, N, 62]` |
 | 4 Rasterizer and losses | stubbed | CUDA rasterizer, photometric, temporal, sparsity |
 | 5 Relight, occupancy, export | occupancy cache only | glare head, occupancy head, ONNX/TensorRT |

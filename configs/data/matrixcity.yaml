@@ -1,0 +1,17 @@
+# @package data
+# CC BY-NC 4.0. Aerial float32 EXR depth is centimeters; depth_scale converts
+# it to meters. Per-block transforms.json rotations are scaled by 1/100
+# (rotation_fix: auto). Paper pose/ splits are already rotations and store
+# translation in units of 100 m: set rotation_fix=none and translation_scale=100.
+source: matrixcity
+root: data/matrixcity
+load_depth: true
+views_per_sample: 4
+rotation_fix: auto
+translation_scale: 1.0
+depth_scale: 0.01
+sync:
+  policy: nearest
+  reference_camera: view0
+  max_image_dt: 1.0
+  require_all_cameras: true

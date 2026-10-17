@@ -1,6 +1,8 @@
 defaults:
   - data: fixture
   - rig: uam_quad
+  - model: vit_small
+  - pretrain: depth
   - _self_
 
 seed: 0

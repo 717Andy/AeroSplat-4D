@@ -1,0 +1,38 @@
+# @package model
+# ViT-L/16, the width of DUSt3R and MASt3R (and the AerialMegaDepth aerial
+# checkpoints of those models). This does not fit an 8–16 GB laptop GPU as an
+# unfrozen 4-camera trainer. It exists so a local checkpoint can be loaded and
+# inspected, or frozen at a very small resolution.
+name: vit_large
+pretrained: null
+pretrained_allow_download: false
+img_size: 224
+patch_size: 16
+embed_dim: 1024
+depth: 24
+num_heads: 16
+mlp_ratio: 4.0
+out_indices: [7, 15, 23]
+cross_view_layers: 2
+pose_encoding: plucker+sinusoidal
+pose_zero_init: true
+num_frequencies: 6
+normalize: imagenet
+gradient_checkpointing: true
+init_values: 1.0
+depth_planes: 16
+depth_near: 0.5
+depth_far: 80.0
+depth_spacing: inverse
+lift_stride: 16
+temperature: 0.02
+memory:
+  min_vram_gb: 8
+  max_vram_gb: 16
+  recommended_resolution: 224
+  batch_size: 1
+  cameras: 4
+  note: >
+    Above the 8–16 GB laptop budget for unfrozen 4-camera training. Load an
+    aerial DUSt3R or MASt3R checkpoint here only to map keys, or freeze the
+    encoder. Train vit_small on 8 GB and vit_base on 16 GB.

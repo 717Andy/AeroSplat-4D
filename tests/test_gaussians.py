@@ -5,7 +5,6 @@ from pathlib import Path
 import pytest
 import torch
 
-from aerosplat.models.backbone import EpipolarLift, ViTBackbone
 from aerosplat.models.gaussians import (
     GAUSSIAN_DIM,
     GaussianLayout,
@@ -90,9 +89,6 @@ def test_stubs_do_not_run_and_heads_match_the_packer():
     for head in (GeometryHead(), AppearanceHead(), DynamicsHead()):
         with pytest.raises(NotImplementedError):
             head(features)
-    for module in (ViTBackbone(), EpipolarLift()):
-        with pytest.raises(NotImplementedError):
-            module(features, features)
     raster = GaussianRasterizer()
     packed = pack_gaussians(*_raw())
     with pytest.raises(NotImplementedError):

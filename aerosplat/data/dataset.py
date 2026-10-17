@@ -104,12 +104,31 @@ def _euclidean_to_planar(depth: np.ndarray, K: np.ndarray) -> np.ndarray:
     return planar
 
 
-def build_dataset(cfg) -> MultiCameraDataset:
-    """Construct a dataset from a composed config (see ``configs/``)."""
+def build_dataset(cfg):
+    """Construct a dataset from a composed config (see ``configs/``).
+
+    Rig recordings (canonical, AirSim, TartanAir V1) return a
+    :class:`MultiCameraDataset`. Geometry-pretraining sources
+    (AerialMegaDepth, TartanAir V2, MatrixCity) return a
+    :class:`~aerosplat.data.specs.SpecDataset`. Both yield
+    :class:`~aerosplat.schema.MultiCameraSample`.
+    """
     source = str(cfg.data.source)
     root = Path(str(cfg.data.root))
+    if source == "aerial_megadepth":
+        from aerosplat.data.adapters.aerial_megadepth import load_aerial_megadepth
+
+        return load_aerial_megadepth(root, cfg.data)
+    if source == "tartanair_v2":
+        from aerosplat.data.adapters.tartanair_v2 import load_tartanair_v2
+
+        return load_tartanair_v2(root, cfg.data)
+    if source == "matrixcity":
+        from aerosplat.data.adapters.matrixcity import load_matrixcity
+
+        return load_matrixcity(root, cfg.data)
     sync = sync_config_from_dict(dict(cfg.data.sync))
-    load_depth = bool(cfg.data.load_depth)
+    load_depth_flag = bool(cfg.data.load_depth)
     if source == "canonical":
         from aerosplat.data.adapters.canonical import read_canonical
 
@@ -138,6 +157,7 @@ def build_dataset(cfg) -> MultiCameraDataset:
         scenes = read_tartanair(root, cfg.data)
     else:
         raise DataError(
-            f"unknown data.source {source!r}. Expected canonical, airsim_raw, or tartanair."
+            f"unknown data.source {source!r}. Expected canonical, airsim_raw, tartanair, "
+            "aerial_megadepth, tartanair_v2, or matrixcity."
         )
-    return MultiCameraDataset(scenes, sync, load_depth=load_depth)
+    return MultiCameraDataset(scenes, sync, load_depth=load_depth_flag)

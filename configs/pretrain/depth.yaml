@@ -1,0 +1,11 @@
+# @package pretrain
+# Stage-1 geometry objective: planar depth, meters, masked where the rig has
+# no return. The step count is the CPU smoke default. A real run is thousands
+# of steps on a GPU and a downloaded subset, not this number.
+steps: 2
+lr: 1.0e-3
+sources:
+  - fixture
+  - tartanair_v2
+  - aerial_megadepth
+  - matrixcity

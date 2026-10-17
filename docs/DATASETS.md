@@ -196,6 +196,61 @@ root/<scene>/<camera>/depth/000000.npy
 `frames.jsonl` holds `timestamp` (seconds), `K`, and world-to-camera `R`, `t` in the
 flight frame. See `docs/ARCHITECTURE.md` for that frame.
 
+## Geometry pretraining (Phase 2)
+
+These three are not the 4-camera training rig. They supervise the ViT and the
+plane sweep: static views, depth, OpenCV poses in meters. Each loader returns
+the same `MultiCameraSample` the fixture does. `R` and `t` are world-to-camera.
+`opencv_cam2world_matrix` is the 4×4 inverse, with the camera center in the
+translation column.
+
+```bash
+python scripts/pretrain_depth.py
+python scripts/pretrain_depth.py data=tartanair_v2 data.root=/path/to/P000 model=vit_tiny pretrain.steps=2
+```
+
+The first command is the CPU smoke loop on `fixtures/tiny_rig`. A real run
+points `data.root` at a downloaded subset and selects `model=vit_small` (8 GB)
+or `model=vit_base` (16 GB).
+
+### AerialMegaDepth
+
+Non-commercial. Access is an approval form on Hugging Face; the loader does not
+download anything. A scene is either `views.json` (image, depth, `K`, OpenCV
+`cam2world`), a COLMAP `cameras.txt` + `images.txt` beside `images/` and
+`depths/`, or per-image `.npz` files with `intrinsics` and `cam2world`. Depth
+`.h5` (key `depth`) needs `h5py` and is treated as meters. Views are one
+camera per frame, so `views_per_sample` chunks filename order into a virtual
+rig. That is not a synchronized mount.
+
+### TartanAir V2
+
+CC BY 4.0. Twelve cameras per tick: `lcam_*` and `rcam_*` for
+front/back/left/right/top/bottom. 640×640, 90° FOV, `fx = fy = cx = cy = 320`,
+10 Hz. Depth is float32 meters packed into an RGBA PNG. Poses are the V1 line
+`tx ty tz qx qy qz qw` in NED. The loader applies the V1 AirSim-camera
+conversion. The V2 axis convention has not been checked with a reprojection on
+a real trajectory; do that before trusting a trained model.
+
+`customize()` in the official toolkit cannot move the cameras to a wide
+baseline. Use the recorded cameras as they are.
+
+### MatrixCity aerial
+
+CC BY-NC 4.0. `transforms.json` is a NeRF cam2world. In the per-block files the
+translation is meters and the 3×3 rotation must be multiplied by 100
+(`rotation_fix: auto` does that when the determinant is tiny, and leaves a real
+rotation alone). The paper `pose/` splits are already normalized and store
+translation in units of 100 m: set `rotation_fix=none` and
+`translation_scale=100`.
+
+Depth is float32 EXR, Z-depth in centimeters. The loader multiplies by
+`depth_scale: 0.01`. The official script divides by 10,000 because it works in
+units of 100 m; do not copy that if you want meters. Use the float32 EXR, not
+float16, which clips at 655.04 m. The city frame stays Z-up. It is not
+georeferenced into ENU. Consecutive frames are grouped with `views_per_sample`
+(the aerial capture is four yaw directions).
+
 ## Stanford Drone Dataset
 
 Not supported. The Stanford Drone Dataset (also called the Stanford aerial / campus

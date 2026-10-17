@@ -1,0 +1,12 @@
+# @package data
+# Non-commercial. Request access on Hugging Face; this config only points at a
+# local unpack. Views are chunked into virtual rigs in filename order.
+source: aerial_megadepth
+root: data/aerial_megadepth
+load_depth: true
+views_per_sample: 4
+sync:
+  policy: nearest
+  reference_camera: view0
+  max_image_dt: 1.0
+  require_all_cameras: true

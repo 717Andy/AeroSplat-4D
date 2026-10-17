@@ -139,6 +139,39 @@ def tartanair_pose_to_w2c(
     return _ned_airsim_cam_pose_to_w2c(position_ned, R_ned_from_cam)
 
 
+def opencv_cam2world_matrix(R: np.ndarray, t: np.ndarray) -> np.ndarray:
+    """OpenCV cam2world 4x4. The translation column is the camera center, meters.
+
+    ``R``, ``t`` are world-to-camera, ``X_cam = R @ X_world + t``.
+    """
+    R_c2w, center = w2c_to_c2w(R, t)
+    matrix = np.eye(4, dtype=np.float64)
+    matrix[:3, :3] = R_c2w
+    matrix[:3, 3] = center
+    return matrix
+
+
+def nerf_c2w_to_opencv_w2c(matrix: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """NeRF / OpenGL cam2world (4x4 or 3x4) to OpenCV world-to-camera.
+
+    NeRF cameras point with x right, y up, z backward. OpenCV is x right, y
+    down, z forward. The camera center is unchanged. MatrixCity per-block files
+    need the rotation scaled by 100 before this call; that fix lives in the
+    MatrixCity adapter because it is a file bug, not a camera convention.
+    """
+    raw = np.asarray(matrix, dtype=np.float64)
+    if raw.shape == (3, 4):
+        full = np.eye(4, dtype=np.float64)
+        full[:3] = raw
+        raw = full
+    if raw.shape != (4, 4):
+        raise ValueError(f"cam2world must be 3x4 or 4x4, got {raw.shape}")
+    flip = np.diag([1.0, -1.0, -1.0])
+    R_cv = raw[:3, :3] @ flip
+    center = raw[:3, 3]
+    return c2w_to_w2c(R_cv, center)
+
+
 def intrinsics_from_hfov(width: int, height: int, fov_degrees: float) -> np.ndarray:
     """Pinhole K from a horizontal FOV, square pixels, principal point at (W/2, H/2).
 
