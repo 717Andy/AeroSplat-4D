@@ -27,6 +27,29 @@ depth_far: 80.0
 depth_spacing: inverse
 lift_stride: 14
 temperature: 0.02
+# Static slot budget. N = cameras * (img/stride)^2 * slots_per_cell.
+# At 224 px, stride 14, 4 cameras, 4 slots: N = 4096. That tensor is about a
+# megabyte. The ViT, not the splat tensor, is the 8 GB limit. max_extra_gaussians
+# only clears the valid mask; it does not change N.
+splats:
+  slots_per_cell: 4
+  max_extra_gaussians: 1024
+  edge_threshold: 0.4
+  offset_radius_m: 0.5
+  along_radius_m: 0.4
+  min_scale_m: 1.0e-4
+  max_scale_m: 2.0
+  wire_transverse_max_m: 0.03
+  wire_long_max_m: 1.0
+  base_scale_m: 0.2
+  extra_thin_scale_m: 0.01
+  extra_long_scale_m: 0.25
+  opacity_init: 0.1
+  note: >
+    8 GB laptop (ViT-S, 224 px, batch 1, 4 cameras): keep slots_per_cell at 4.
+    16 GB (ViT-B) uses the same splat budget; the extra memory is the backbone.
+    Do not raise the slot count to chase wires until the ViT fits. The CPU
+    reference renderer is O(N*H*W) and is not the 1080p path.
 memory:
   min_vram_gb: 8
   max_vram_gb: 16

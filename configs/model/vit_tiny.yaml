@@ -24,6 +24,23 @@ depth_far: 12.0
 depth_spacing: linear
 lift_stride: 4
 temperature: 0.02
+# Tests and CPU smoke. Not the laptop training recipe.
+splats:
+  slots_per_cell: 4
+  max_extra_gaussians: 256
+  edge_threshold: 0.4
+  min_scale_m: 1.0e-4
+  max_scale_m: 2.0
+  wire_transverse_max_m: 0.03
+  wire_long_max_m: 1.0
+  base_scale_m: 0.2
+  extra_thin_scale_m: 0.01
+  extra_long_scale_m: 0.25
+  opacity_init: 0.1
+  note: >
+    Unit-test width. Laptop training is vit_small on 8 GB or vit_base on
+    16 GB, batch size 1, four cameras, 224 px. This file's slot cap is only
+    so the CPU smoke model stays small.
 memory:
   min_vram_gb: 8
   max_vram_gb: 16

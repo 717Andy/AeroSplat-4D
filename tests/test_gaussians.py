@@ -13,7 +13,14 @@ from aerosplat.models.gaussians import (
     rasterizer_view,
     unpack_gaussians,
 )
-from aerosplat.models.heads import HEAD_OUTPUTS, AppearanceHead, DynamicsHead, GeometryHead
+from aerosplat.models.heads import (
+    HEAD_OUTPUTS,
+    AppearanceHead,
+    DynamicsHead,
+    GeometryHead,
+    OccupancyHead,
+    RelightHead,
+)
 from aerosplat.models.rasterizer import GaussianRasterizer
 
 
@@ -84,15 +91,30 @@ def test_pack_rejects_logits_and_bad_shapes():
         pack_gaussians(xyz[0], scale[0], quat[0], opacity[0], sh[0], velocity[0])
 
 
-def test_stubs_do_not_run_and_heads_match_the_packer():
-    features = torch.zeros(1)
-    for head in (GeometryHead(), AppearanceHead(), DynamicsHead()):
+def test_phase3_heads_run_phase5_stays_stubbed_and_cuda_stays_optional():
+    features = torch.zeros(2, 3, 8)
+    geometry = GeometryHead(8)(features)
+    assert geometry["offset_raw"].shape == (2, 3, 3)
+    assert geometry["log_scale"].shape == (2, 3, 3)
+    assert geometry["quat_raw"].shape == (2, 3, 4)
+    appearance = AppearanceHead(8)(features)
+    assert appearance["opacity_logit"].shape == (2, 3, 1)
+    assert appearance["sh_residual"].shape == (2, 3, 16, 3)
+    assert DynamicsHead(8)(features)["velocity"].shape == (2, 3, 3)
+    for head in (RelightHead(), OccupancyHead()):
         with pytest.raises(NotImplementedError):
             head(features)
-    raster = GaussianRasterizer()
     packed = pack_gaussians(*_raw())
-    with pytest.raises(NotImplementedError):
-        raster(packed, cameras=None)
+    raster = GaussianRasterizer(backend="diff_gaussian")
+    camera = {
+        "K": torch.eye(3).view(1, 3, 3),
+        "R": torch.eye(3).view(1, 3, 3),
+        "t": torch.zeros(1, 3),
+        "height": 4,
+        "width": 4,
+    }
+    with pytest.raises(RuntimeError):
+        raster(packed, cameras={"front": camera})
     assert HEAD_OUTPUTS["geometry"] == ("xyz", "scale", "quat")
     assert HEAD_OUTPUTS["appearance"] == ("opacity", "sh")
     assert HEAD_OUTPUTS["dynamics"] == ("velocity",)
@@ -102,3 +124,4 @@ def test_stubs_do_not_run_and_heads_match_the_packer():
     source = (Path(__file__).parents[1] / "aerosplat" / "models" / "rasterizer.py").read_text()
     assert "import diff_gaussian_rasterization" not in source
     assert "import gsplat" not in source
+    assert "importlib" in source

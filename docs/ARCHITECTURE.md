@@ -3,8 +3,11 @@
 AeroSplat-4D is a feedforward model: one pass over a synchronized multi-camera
 rig predicts a 4D Gaussian cloud. Phase 1 is the data contract. Phase 2 is the
 shared ViT and the plane-sweep lift that turns it into per-pixel features and
-flight-frame anchors. The splat heads, the CUDA rasterizer, and the losses are
-still stubs in `aerosplat.models`.
+flight-frame anchors. Phase 3 is the geometry, appearance, and dynamics heads,
+the fixed-budget wire allocator, and the slot layout the temporal loss indexes.
+The CUDA rasterizer binding is guarded. A pure-PyTorch reference splatter
+covers CPU tests. The losses, the glare head, and the occupancy head are still
+stubs.
 
 ```
 N camera frames (image, K, R|t, time, optional depth)
@@ -82,9 +85,13 @@ temporal loss compares the packed tensor at `t` with the packed tensor at `t+1`.
 The spec's wording ("B is the batch size (video frame sequence)") is ambiguous;
 this is the reading that matches a feedforward step plus a velocity loss.
 
-`N` is the number of Gaussians at that timestep. The spec does not fix `N`. A
-batch will pad to one `N`. A validity mask is not part of the 62 and does not
-exist yet.
+`N` is the number of Gaussian slots at that timestep. Phase 3 fixes it for a
+rig resolution: `N = sum over cameras of (lift_grid_h * lift_grid_w * slots_per_cell)`.
+It does not change when a wire appears or disappears. A batch is only valid
+when every sample shares that layout. `GaussianCloud.valid` (`[B, N]` bool) and
+`GaussianCloud.wire_prob` (`[B, N]` in `[0, 1]`) sit beside the 62. They are
+not extra channels. `wire_prob` is what Phase 4 can multiply into `L_sparse`
+and what Phase 5 can read for thin structure.
 
 | Slice | Count | Field |
 | --- | --- | --- |
@@ -98,10 +105,23 @@ exist yet.
 SH is coefficient-major, then RGB. `packed[..., 11:59].reshape(B, N, 16, 3)` is
 the layout `diff-gaussian-rasterization` takes as `(N, 16, 3)`.
 
-The packed values are physical parameters, not logits. Heads that predict
-log-scale and logit-opacity go through `physical_from_raw` (exp, sigmoid,
-normalize) before packing. The rasterizer reads `packed[..., :59]`. Velocity
-stays in the tensor for the temporal loss and is not a rasterizer input.
+The packed values are the tensors `diff-gaussian-rasterization` multiplies.
+The CUDA kernel does not apply `exp` or `sigmoid`.
+
+| Field | Stored in the 62 | What the kernel does with it |
+| --- | --- | --- |
+| xyz | meters, flight frame | `means3D` |
+| scale | **post-exp** meters, positive | `R diag(s)^2 R^T`. A log-scale here is wrong. |
+| quat | unit wxyz, Phase 3 forces `w >= 0` | real part is `q.x`. The kernel normalizes again. |
+| opacity | **post-sigmoid**, in `[0, 1]` | alpha, not a logit |
+| SH | raw coefficients, 16×3, not RGB | `rgb = eval(sh, view) + 0.5`. DC uses `SH_C0 = 0.28209…` so `rgb = SH_C0 * sh0 + 0.5` |
+| velocity | m/s, world | not read. Slice `packed[..., :59]` before binding. |
+
+`physical_from_raw` is the exp / sigmoid / normalize helper. Phase 3 does not
+call it. Wire Gaussians go through `activate_scales` first, which adds the
+anisotropic upper cap and the numerical floor, and then `pack_gaussians`.
+`GaussianCloud` is the typed pack: activated channels plus `valid`,
+`wire_prob`, and the slot index.
 
 `GaussianLayout` in `aerosplat.models.gaussians` is the source of truth for the
 slices. Tests check that the names and the slices add up to 62.
@@ -110,15 +130,16 @@ slices. Tests check that the names and the slices add up to 62.
 
 | Head | Phase | Outputs | Packed into the 62? |
 | --- | --- | --- | --- |
-| Geometry | 3 | xyz, scale, quat | yes |
-| Appearance | 3 | opacity, SH | yes |
-| Dynamics | 3 | velocity | yes, not read by the rasterizer |
-| Relight | 5 | glare residual RGB | no; consumes SH |
-| Occupancy | 5 | local voxel logits | no; supervised by the cache |
+| Geometry | 3, implemented | xyz = anchor + tanh offset, log-scale, quat | yes, after activation |
+| Appearance | 3, implemented | opacity, SH residual | yes. DC is initialized from the pixel |
+| Dynamics | 3, implemented | velocity, zero at init | yes, not read by the rasterizer |
+| Relight | 5, stub | glare residual RGB | no; consumes SH |
+| Occupancy | 5, stub | local voxel logits | no; supervised by the cache |
 
-Phase 3 and Phase 5 heads still raise `NotImplementedError`. `GaussianRasterizer`
-checks the packed shape and then raises. It does not import a CUDA extension.
-The Phase 2 modules below are implemented.
+`GaussianRasterizer(backend="auto")` uses the CUDA binding when
+`diff_gaussian_rasterization` imports and CUDA is available, and the reference
+splatter otherwise. The import is `importlib` inside the call. CPU CI never
+compiles the extension.
 
 ## Phase 2
 
@@ -216,20 +237,151 @@ the fixture, on CPU: L1 on the expected depth plus a cross-entropy onto the
 nearest plane. Invalid depth (0) is masked. That script is the smoke test, not
 a trained model.
 
-### Thin structure
+## Phase 3
 
-The spec asks for high-density microscopic Gaussians on wires and an upper bound
-`τ_max` on their scale, and also for a "lower bound on scale" so Gaussians cannot
-become oversized. Those two sentences disagree. A lower bound prevents scales from
-getting small, which is the opposite of a microscopic splat and the opposite of
-`τ_max`. Phase 3 should implement the upper bound. The lower bound looks like a
-wording error.
+`SplatPredictor` reads a `LiftedGeometry` and returns a `GaussianCloud`.
+`FeedforwardSplatter` is the lifter plus that predictor. `build_model` wires
+both from the Hydra config.
 
-Feedforward "adaptive density" is also unspecified. Classic 3DGS densifies by
-cloning and splitting during optimization. A single forward pass needs a defined
-token budget (more tokens where the feature map is high frequency, or a variable-N
-decoder). That mechanism is not in the spec. `N` stays a free dimension until
-Phase 3 picks one.
+### Heads
+
+The geometry head's last layer is zero-initialized except for quaternion `w = 1`,
+so the residual rotation starts at the identity. XYZ is the lift anchor plus
+`tanh(offset) * offset_radius_m`. Extras are additionally spread along the
+image-plane tangent of the edge, inside `along_radius_m`. Log-scale is the head
+output plus a per-subslot bias: the base slot is isotropic (`base_scale_m`),
+each extra starts long on local X and thin on Y and Z.
+
+The appearance head's SH residual is zero-initialized. The predictor adds
+`sh_dc = (rgb - 0.5) / SH_C0` from the lift-cell color, which is the degree-0
+coefficient the rasterizer turns back into that RGB. Higher bands stay zero
+until they train. Opacity starts at `opacity_init` (0.1). Slots with `valid`
+false are packed with opacity 0 so a rasterizer that ignores the mask does not
+draw them.
+
+The dynamics head is zero-initialized. Velocity is meters per second in the
+flight frame, the unit `Δt` in seconds can multiply.
+
+### Slots, and why `L_temp` can index `i`
+
+Andy's loss is
+
+```
+L_temp = (1 / N_splats) sum_i || (x_i^(t) + v_i^(t) Δt) - x_i^(t+1) ||_2^2
+```
+
+Index `i` has to be the same Gaussian at both times. The predictor does not
+re-rank. `i` is the slot `(camera name, lift-cell row, lift-cell col, subslot)`,
+packed in that order. Subslot 0 is the base Gaussian on the anchor. Subslots
+`1..K` are the extra candidates. `temporal_residual(cloud_t, cloud_tp1, dt)`
+returns `x_t + v_t Δt - x_{t+1}` and a weight `valid_t * valid_{t+1}`. It
+raises if the camera order or the grid changed. The `x + v Δt` term is the
+loss target, not a second matching stage.
+
+This is pixel correspondence, not a tracked world point. A moving camera looks
+at a different surface point through the same pixel next frame, so a static
+world still has a nonzero residual when velocity is zero. A tracker that
+gathered Gaussians into a new order would change `N` and break export. Phase 4
+should reduce `L_temp` with the weight this helper returns. Whether ego-motion
+should be subtracted before that residual is an open question, below.
+
+### Wires: density and the scale cap
+
+The spec asks for high-density microscopic Gaussians on wires, an upper bound
+`τ_max` on their scale, and also a "lower bound on scale" so Gaussians cannot
+become oversized. Those sentences disagree with each other and with Andy's
+loss. A lower bound stops scales from getting small, which is the opposite of
+a microscopic splat. `L_sparse` is
+
+```
+L_sparse = sum_i α_i * max(0, s_x,i * s_y,i * s_z,i - τ_max)
+```
+
+`τ_max` upper-bounds the **volume** `s_x s_y s_z`, not a single axis, and the
+sum is over every Gaussian. The prose around it says the threshold is for
+wire-like structures.
+
+Phase 3 implements the upper bound, anisotropically, in the parameterization
+rather than as a loss (the loss is Phase 4):
+
+* Every scale is floored at `min_scale_m` (default `1e-4` m, a tenth of a
+  millimeter). That is only so the covariance stays invertible. It is far
+  below the wire thickness. It is not the spec's lower bound, and it does not
+  stop a microscopic splat.
+* `wire_prob = 0` caps every axis at `max_scale_m`.
+* `wire_prob = 1` caps the largest predicted axis at `wire_long_max_m` and the
+  other two at `wire_transverse_max_m`. The volume is then at most
+  `wire_transverse_max_m^2 * wire_long_max_m`. A straight-through one-hot
+  picks the long axis, so the forward cap is hard and the log-scale logits
+  still get gradient. The long axis is local X at initialization, and the
+  quaternion slerps toward the rotation that maps local X onto the wire
+  tangent in the flight frame. The tangent is the structure-tensor direction,
+  fronto-parallel: `(du/fx, dv/fy, 0)` in the camera, then `R^T`.
+
+`wire_prob` is a side output. Andy's formula does not multiply by it. The spec
+prose does. Phase 4 has to choose; the probability is there either way.
+
+Adaptive density in one forward pass cannot be 3DGS clone-and-split, and a
+variable `N` cannot export. The edge branch is a Sobel / structure-tensor
+prior plus a zero-initialized conv residual, run on the image the lifter saw
+or on a same-FOV higher-resolution copy (`highres_images`). The ViT is at
+224 px; a cable is often one pixel at the sensor, so the prior is computed at
+that image's resolution and max-pooled onto the lift cell. The max, not the
+cell center, is what fires, and the tangent is taken from the winning pixel.
+Padding is replicate, so a constant image does not grow a fake border wire.
+
+Each cell owns `slots_per_cell` slots (default 4: one base, three extras). The
+base slot is always valid. An extra is valid when the cell's edge probability
+clears `edge_threshold` and the slot is inside the global top-`max_extra_gaussians`.
+Top-k writes `valid`. It does not gather. `N` is the same for a blank wall and
+for a wire. At 224 px, stride 14, 4 cameras, 4 slots, `N = 4096`. That tensor
+is about a megabyte. The ViT is the 8–16 GB limit, not the splat count. Configs
+say so.
+
+The hard mask is not differentiable. The edge conv trains through the soft
+`wire_prob` (the scale cap and the tangent slerp), which is why the last conv
+is zero-initialized but still receives gradient. `anchor_valid` from the lift
+is copied onto the cloud and does not, by itself, turn a base slot off.
+
+### Rasterizer
+
+`ReferenceSplatRenderer` is an EWA splatter: project with the full OpenCV `K`,
+form the 2D covariance from the Jacobian of the perspective divide, add the
+same 0.3 px low-pass the CUDA kernel adds on the diagonal, evaluate SH, and
+alpha-composite front to back. It is `O(N * H * W)`. Use it for a handful of
+Gaussians on CPU. Do not train with it, and do not point it at 1080p.
+
+`DiffGaussianRasterizationAdapter` builds the transposed world-to-camera and
+projection matrices the Inria bindings expect (`viewmatrix = w2c.T`, camera
+center `-R^T t`) and calls `GaussianRasterizer` with post-exp scales,
+post-sigmoid opacity, wxyz quaternions, and `[N, 16, 3]` SH. That package's
+focal length comes from `tan(fov/2)` and the image size, so the principal
+point is the image center. The reference path uses `cx, cy`. They match on a
+centered camera. Phase 4 should check the first CUDA frame against the
+reference before trusting an off-center `K`.
+
+### Open questions for Phase 4 and Phase 5
+
+1. Should `L_sparse` follow Andy's ungated sum, or the spec prose and multiply
+   by `wire_prob`? Applying `τ_max` to every Gaussian also penalizes a
+   building-sized splat.
+2. `τ_max` is unset. The cap's volume at `wire_prob = 1` is
+   `wire_transverse_max_m^2 * wire_long_max_m` (defaults `0.03^2 * 1 = 9e-4` m³).
+   A loss threshold equal to that cap is zero wherever the cap already binds.
+   A slightly smaller `τ_max` still has gradient inside the feasible set.
+3. Pixel slots make `i` stable and `N` static. They are not object tracks.
+   Under ego-motion, `x_i^(t+1)` is a different surface point. Subtracting the
+   camera motion, or supervising velocity as zero on static scenes another
+   way, is not decided.
+4. `L_temp` on a slot that is invalid at one of the two times: the helper's
+   weight is the product of the two masks. A wire that appears at `t+1` then
+   contributes nothing. That may or may not be what the sum over `N_splats`
+   should do.
+5. `highres_images` must be the same frustum as the network image, only finer.
+   A sliding crop with its own `K` is not implemented.
+6. The base slot stays valid when the plane sweep had no overlap
+   (`anchor_valid` false). Phase 4 may want to drop those from the photometric
+   term.
 
 ### Relighting
 
@@ -269,30 +421,39 @@ supervision is an open Phase 5 problem: smaller local crop, a 2D thin-structure
 channel, or a different primitive. The default 0.5 m voxels will not represent a
 cable. They exist so the cache API and the tests are real.
 
-## Losses (not implemented)
+## Losses (not implemented; Phase 4)
 
-The spec's equations were embedded as images and did not survive text extraction.
-What follows is the prose, not a recovered formula. Coefficients are unspecified.
-Do not treat this as the "exact formulation" the spec asked to implement until
-the equation images are available.
+Andy's equations (2026-10-16) are the formulation Phase 4 implements. The PDF
+embedded them as images; the text form is authoritative. Coefficients and
+`τ_max` are still unset. Phase 3 does not evaluate these. It produces the
+packed cloud, the slot index, and `wire_prob`.
 
-* Photometric: pixel L1 between the rasterized view and the camera image.
-* SSIM: combined with L1, as `1 - SSIM`, to keep edges from going soft.
-* Temporal: `|| (x_t + v_t * Δt) - x_{t+1} ||` with `v` in m/s and `Δt` in
-  seconds. The norm and any per-Gaussian mask are unspecified.
-* Occupancy: BCE of voxel logits against the occupied mask, unknown cells
-  masked out. A false-negative weight is a separate, unspecified term.
-* Sparsity: a penalty on opacity, plus a penalty when a wire-like Gaussian's
-  scale exceeds `τ_max`. Which Gaussians count as wire-like is unspecified.
+```
+L_total = λ1 L_photo + λ2 L_ssim + λ3 L_temp + λ4 L_occ + λ5 L_sparse
+L_photo = (1 / N_cam) sum_c || Ihat_c - I_c ||_1
+L_ssim  = 1 - (1 / N_cam) sum_c SSIM(Ihat_c, I_c)
+L_temp  = (1 / N_splats) sum_i || (x_i^(t) + v_i^(t) Δt) - x_i^(t+1) ||_2^2
+L_occ   = - sum_{v in V} [ y_v log yhat_v + (1 - y_v) log(1 - yhat_v) ]
+L_sparse = sum_i α_i * max(0, s_x,i * s_y,i * s_z,i - τ_max)
+```
+
+`L_photo` should be normalized per pixel. `L_temp` needs the slot
+correspondence above; feedforward predictions are not an unordered set.
+`L_occ` is a sum, so it scales with `|V|`, and it has no wire weight. A
+positive weight or a focal term is still recommended, and unknown voxels stay
+masked. `L_sparse` penalizes volume. It does not add density on edges. The
+edge branch is what adds density. Whether the sum is gated by `wire_prob` is
+open question 1 above.
 
 ## Rasterizer
 
-Phase 4 binds a differentiable Gaussian rasterizer. The spec names
-`diff-gaussian-rasterization`. That package is a source build against CUDA and
-is not on PyPI in a usable CPU form. `gsplat` is a maintained alternative with
-the same job. The choice is open. `aerosplat.models.rasterizer.GaussianRasterizer`
-is the binding site either way. CI installs a CPU PyTorch wheel and does not
-compile either extension.
+Phase 4 trains through `diff-gaussian-rasterization`. That package is a source
+build against CUDA and is not on PyPI in a usable CPU form. `gsplat` remains a
+possible substitute with the same job; the adapter does not import it. The
+binding site is `DiffGaussianRasterizationAdapter`. `GaussianRasterizer` picks
+it only when the import succeeds and CUDA is available. CI installs a CPU
+PyTorch wheel, does not compile the extension, and renders tests with
+`ReferenceSplatRenderer`.
 
 ## Phase roadmap
 
@@ -300,8 +461,8 @@ compile either extension.
 | --- | --- | --- |
 | 1 Foundation, ingestion, calibration | this tree | schema, sync, Colosseum + Cosys-AirSim + TartanAir + fixture, occupancy cache, tensor contract |
 | 2 ViT and 2D-to-3D lift | this tree | shared ViT, pose tokens, plane-sweep lift, depth pretrain |
-| 3 Splat parameter heads | stubbed | geometry, appearance, dynamics, pack into `[B, N, 62]` |
-| 4 Rasterizer and losses | stubbed | CUDA rasterizer, photometric, temporal, sparsity |
+| 3 Splat parameter heads | this tree | geometry, appearance, dynamics, wire slots, pack into `[B, N, 62]` |
+| 4 Rasterizer and losses | adapter stubbed, reference renderer in | CUDA rasterizer training, photometric, temporal, sparsity |
 | 5 Relight, occupancy, export | occupancy cache only | glare head, occupancy head, ONNX/TensorRT |
 
 Sub-millisecond inference for a ViT over four high-resolution images plus a
@@ -319,7 +480,8 @@ These are disagreements with the attached spec, not silent edits.
    maintained four-camera recorder. Colosseum is archived and still supported.
    Details in `docs/DATASETS.md`.
 2. "Lower bound on scale" contradicts `τ_max` and contradicts microscopic
-   Gaussians. Implement the upper bound.
+   Gaussians. Phase 3 caps wire volume anisotropically (two thin axes, one
+   long axis) and keeps only a numerical floor. See Phase 3 above.
 3. Degree-3 SH does not isolate lens flare. The relight head has to be a
    separate residual.
 4. Unweighted occupancy BCE does not preferentially punish missed wires.
@@ -329,9 +491,11 @@ These are disagreements with the attached spec, not silent edits.
    The cache is local. Wire resolution is unsolved.
 7. `B` is a batch of timesteps, not "the video frame sequence" as one axis.
 8. Velocity units were unspecified. They are m/s in the world frame.
-9. The loss equations were images in the PDF and are not recoverable from the
-   text. The prose is recorded above. Coefficients stay unset.
-10. Adaptive density in a feedforward net is not 3DGS densification. The
-    mechanism is unspecified.
+9. The loss equations were images in the PDF. Andy's text form is now the
+   formulation Phase 4 implements. It is recorded under Losses. Coefficients
+   and `τ_max` stay unset.
+10. Adaptive density in a feedforward net is not 3DGS densification. Phase 3
+    uses a fixed slot budget, an edge prior at image resolution, and a
+    `valid` mask. `N` does not change when a wire appears.
 11. AirSim's camera frame is not OpenCV. Loaders convert. A rasterizer that
     assumes the raw NED camera will be silently wrong.

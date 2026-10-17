@@ -4,9 +4,14 @@ Feedforward 4D Gaussian splatting for urban air mobility. A multi-camera UAV rig
 goes in; one forward pass predicts a Gaussian cloud with position, scale,
 orientation, opacity, degree-3 spherical harmonics, and a velocity. Phase 1 is
 the sample schema, calibration, and the occupancy cache. Phase 2 is the shared
-ViT, pose-conditioned tokens, and the plane-sweep lift that hands Phase 3 a
-set of flight-frame anchors. The rasterizer, the glare head, and the occupancy
-head are still stubs.
+ViT, pose-conditioned tokens, and the plane-sweep lift. Phase 3 reads that
+lift and packs `[B, N, 62]`: anchor plus a bounded offset, post-exp scales
+with an anisotropic cap on wires, a unit wxyz quaternion, sigmoid opacity,
+degree-3 SH whose DC matches the pixel, and velocity in m/s. `N` is a fixed
+slot budget. A wire allocates extra slots by clearing a mask, not by changing
+the tensor length. The glare head, the occupancy head, and the loss stack are
+still stubs. A CPU reference splatter renders tests. The CUDA rasterizer is
+imported only when it is installed.
 
 The flight frame is ENU Z-up, cameras are OpenCV, and extrinsics are
 world-to-camera. AirSim-family simulators (Cosys-AirSim and archived Colosseum)
@@ -21,7 +26,7 @@ covers formats and why the Stanford Drone Dataset is not used.
 aerosplat/          package
   data/             sync, canonical / AirSim / TartanAir adapters, occupancy cache
   geometry/         poses, unprojection, voxelization, software raycast
-  models/           ViT, plane-sweep lift, [B, N, 62] packer, Phase 3–5 stubs
+  models/           ViT, plane-sweep lift, Phase 3 splat heads, CPU reference splatter
   capture/          AirSim-family rig capture (Cosys-AirSim, Colosseum) and render benchmark
   vis/              multi-camera alignment check
 configs/            Hydra configs (data + rig groups)
@@ -30,9 +35,12 @@ scripts/            fixture, capture, cache, sanity
 tests/              CPU tests
 ```
 
-Phase 3–5 heads and the rasterizer raise `NotImplementedError`.
-`diff-gaussian-rasterization` is not imported. CI is CPU-only lint and tests;
-it does not compile CUDA and it does not download pretrained weights.
+The relight and occupancy heads still raise `NotImplementedError`.
+`diff-gaussian-rasterization` is imported only through `importlib` when a
+caller asks for that backend and the extension is installed. CI is CPU-only
+lint and tests; it does not compile CUDA and it does not download pretrained
+weights. The reference splatter in `aerosplat.models.rasterizer` is what the
+CPU tests render.
 
 ## Install
 
@@ -44,9 +52,9 @@ pip install numpy pyyaml omegaconf hydra-core pillow pytest ruff matplotlib
 
 `--no-deps` matters if a CPU torch wheel is already installed: a normal
 `pip install -e .` can replace it with a CUDA build. GPU training machines can
-install a CUDA torch instead. The rasterizer extension is still a Phase 4
-decision (`diff-gaussian-rasterization` or a maintained alternative such as
-`gsplat`) and is not part of this install.
+install a CUDA torch instead. `diff-gaussian-rasterization` is an optional
+CUDA extension for Phase 4 training and is not part of this install. CPU runs
+use the reference splatter.
 
 ## Fixture and sanity check
 
@@ -101,14 +109,15 @@ Hydra overrides use the same `data=` and `rig=` groups as `configs/`.
 | --- | --- |
 | 1 | Ingestion, calibration, occupancy cache, tensor contract. |
 | 2 | Shared ViT, pose tokens, plane-sweep lift, depth pretraining. |
-| 3 | Geometry, appearance, and dynamics heads → `[B, N, 62]`. |
-| 4 | Differentiable rasterizer, photometric and temporal losses. |
+| 3 | Geometry, appearance, and dynamics heads, wire slots, `[B, N, 62]`. |
+| 4 | Differentiable CUDA rasterizer training, photometric and temporal losses. |
 | 5 | Glare residual, occupancy head, export. |
 
 Disagreements with the original spec (scale bounds, SH versus flare, occupancy
 BCE, the Stanford set, sub-millisecond inference) are listed in
-`docs/ARCHITECTURE.md`. The loss equations in the spec PDF were images and are
-not recoverable as text; do not implement a guessed formula as if it were exact.
+`docs/ARCHITECTURE.md`. Andy's loss equations are recorded there. Phase 4
+implements them. Phase 3 supplies the slot index and the per-Gaussian wire
+probability they need. Coefficients and `τ_max` are still unset.
 
 ## Tests
 
@@ -118,9 +127,12 @@ reads `fixtures/tiny_rig`. No dataset download and no GPU.
 ## Phase 2
 
 The lifter is `aerosplat.models.build_lifter`. It returns per-camera features,
-a depth distribution, and `[B, N, 3]` anchors in the flight frame. `N` is the
-number of lift cells; Phase 3 packs those into `[B, N, 62]` once the other
-heads exist. `docs/ARCHITECTURE.md` records why the lift is a plane sweep.
+a depth distribution, and `[B, N, 3]` anchors in the flight frame. `N` there is
+the number of lift cells. `aerosplat.models.build_model` runs the lifter and
+the Phase 3 predictor and returns a `GaussianCloud` whose packed tensor is
+`[B, N_slots, 62]` with `N_slots = N_cells * slots_per_cell`.
+`docs/ARCHITECTURE.md` records why the lift is a plane sweep, why wire scales
+are capped anisotropically, and why Gaussian `i` is a pixel slot.
 
 Laptop training budgets are in `configs/model/`: ViT-S at 224px for 8 GB,
 ViT-B at 224px for 16 GB, batch size 1, four cameras. `vit_large` matches an

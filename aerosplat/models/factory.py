@@ -9,6 +9,7 @@ import torch.nn as nn
 from aerosplat.models.backbone import ViTBackbone
 from aerosplat.models.lift import EpipolarLift
 from aerosplat.models.pretrained import load_pretrained_weights
+from aerosplat.models.splats import FeedforwardSplatter, SplatConfig, SplatPredictor
 
 
 @dataclass
@@ -120,6 +121,45 @@ def build_lifter(cfg) -> MultiViewLifter:
             allow_download=model_cfg.pretrained_allow_download,
         )
     return lifter
+
+
+def splat_config_from(cfg) -> SplatConfig:
+    """Read ``model.splats`` from a Hydra config. Missing block -> defaults."""
+    if isinstance(cfg, SplatConfig):
+        return cfg
+    node = cfg.model if hasattr(cfg, "model") else cfg
+    splats = _get(node, "splats", None)
+    if splats is None:
+        return SplatConfig()
+    max_extra = _get(splats, "max_extra_gaussians", None)
+    if isinstance(max_extra, str) and max_extra.lower() in {"", "null", "none"}:
+        max_extra = None
+    return SplatConfig(
+        slots_per_cell=int(_get(splats, "slots_per_cell", 4)),
+        max_extra_gaussians=None if max_extra is None else int(max_extra),
+        edge_threshold=float(_get(splats, "edge_threshold", 0.4)),
+        offset_radius_m=float(_get(splats, "offset_radius_m", 0.5)),
+        along_radius_m=float(_get(splats, "along_radius_m", 0.4)),
+        min_scale_m=float(_get(splats, "min_scale_m", 1e-4)),
+        max_scale_m=float(_get(splats, "max_scale_m", 2.0)),
+        wire_transverse_max_m=float(_get(splats, "wire_transverse_max_m", 0.03)),
+        wire_long_max_m=float(_get(splats, "wire_long_max_m", 1.0)),
+        base_scale_m=float(_get(splats, "base_scale_m", 0.2)),
+        extra_thin_scale_m=float(_get(splats, "extra_thin_scale_m", 0.01)),
+        extra_long_scale_m=float(_get(splats, "extra_long_scale_m", 0.25)),
+        opacity_init=float(_get(splats, "opacity_init", 0.1)),
+    )
+
+
+def build_splat_predictor(cfg) -> SplatPredictor:
+    """Phase 3 heads sized to the ViT width in ``cfg``."""
+    model_cfg = cfg if isinstance(cfg, ModelConfig) else model_config_from(cfg)
+    return SplatPredictor(model_cfg.embed_dim, splat_config_from(cfg))
+
+
+def build_model(cfg) -> FeedforwardSplatter:
+    """Lifter plus splat predictor. The forward returns a :class:`GaussianCloud`."""
+    return FeedforwardSplatter(build_lifter(cfg), build_splat_predictor(cfg))
 
 
 def _get(node, key: str, default):
