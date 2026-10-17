@@ -10,7 +10,8 @@ that, no matter how much traffic it contains.
 | Source | Role | Cameras | Depth + pose |
 | --- | --- | --- | --- |
 | Synthetic fixture (`fixtures/tiny_rig`) | Tests and the sanity script. No download. | 4 (front, down, port, starboard), unequal rates and sizes | Yes, rendered to match K and R\|t |
-| Colosseum / AirSim | Primary capture path for a real 4-camera UAM rig | Whatever `settings.json` mounts; the checked-in rig is 4 | Yes, if DepthPlanar is recorded |
+| Cosys-AirSim | Maintained capture path for a real 4-camera UAM rig | Whatever `settings.json` mounts; the checked-in rig is 4 | Yes, if DepthPlanar is recorded |
+| Colosseum / AirSim | Archived. Same rig and the same loader, for existing recordings | Same checked-in rig | Yes, if DepthPlanar is recorded |
 | TartanAir | Public multi-view set with depth and pose, same simulator family | Stereo left/right, forward-facing | Yes |
 
 ## Why TartanAir, not Mid-Air
@@ -22,11 +23,11 @@ views, which is the geometry Phase 2 has to learn.
 
 TartanAir was rendered in AirSim. Poses are NED, the camera frame is X-forward /
 Y-right / Z-down, depth is planar Z in meters, and the pose line is
-`tx ty tz qx qy qz qw` (xyzw). That is the same convention Colosseum uses, so one
-conversion (`aerosplat.geometry.coordinates`) serves both adapters. The stereo baseline
-is 0.25 m to the right of the left camera. Stereo is not a four-camera rig; it is the
-public data that actually has multi-view geometry. The four-camera case is the fixture
-and a Colosseum capture.
+`tx ty tz qx qy qz qw` (xyzw). Colosseum and Cosys-AirSim use that same body-mounted
+convention, so one conversion (`aerosplat.geometry.coordinates`) serves the adapters.
+The stereo baseline is 0.25 m to the right of the left camera. Stereo is a forward
+pair, which is the public data that actually has multi-view geometry. The four-camera
+case is the fixture and a Cosys-AirSim (or existing Colosseum) capture.
 
 TartanAir has no capture clock. Frame `i` is assigned `t = i / fps` (default 10 Hz).
 Both eyes share that timestamp, so the sync policy is `nearest` with a tiny tolerance.
@@ -67,12 +68,48 @@ python scripts/prepare_cache.py data=tartanair data.root=/path/to/P000 --limit 2
 `depth_kind` defaults to `planar_z`. If a future dump is Euclidean range, set
 `data.depth_kind=euclidean` in the override. The dataset converts it to planar Z on load.
 
-## Colosseum / AirSim
+## Cosys-AirSim and Colosseum
 
 Upstream AirSim is archived. [Colosseum](https://github.com/CodexLabsLLC/Colosseum)
-is the maintained fork and speaks the same RPC and `settings.json` schema. The Python
-client is imported as `airsim` or `colosseum`, whichever is installed. It is not a
-dependency of this package and CI does not install it.
+is archived too (read-only). [Cosys-AirSim](https://github.com/Cosys-Lab/Cosys-AirSim)
+is the maintained option. Both stay on one backend,
+`aerosplat.capture.airsim`, selected with `--simulator colosseum` or
+`--simulator cosys`. The Python client is not a dependency of this package and CI
+does not install it. Colosseum is imported as `airsim` or `colosseum`. Cosys-AirSim
+is imported as `cosysairsim` only, so a leftover Colosseum install cannot answer a
+Cosys capture.
+
+The RPC surface is the same (`MultirotorClient`, `ImageRequest`, `simGetImages`,
+`simGetVehiclePose`). The differences that change a recording:
+
+| | Colosseum | Cosys-AirSim |
+| --- | --- | --- |
+| Repo | archived, read-only | maintained |
+| `SettingsVersion` | 1.2 | 2.0 (older files are refused) |
+| Python import | `airsim`, then `colosseum` | `cosysairsim` |
+| Scene RGB from `simGetImages` | stored as returned | uncompressed RGB is flipped with `np.flipud` (documented Cosys quirk) |
+| DepthPlanar, ImageType 1 | camera-plane Z, meters, row-major | same, and the float buffer is not flipped |
+| DepthPerspective, ImageType 2 | Euclidean ray range | same. The raw parser labels that `euclidean` and converts to planar Z on load |
+| DepthVis (3), DisparityNormalized (4) | visualization and normalized disparity | same. Neither is metric depth, and the parser rejects a rig that recorded only those |
+| Segmentation, ImageType 5 | RGB palette of mesh-name object IDs (`simSetSegmentationObjectID`) | instance color index. `InitialInstanceSegmentation` true assigns one per mesh at startup. Palette: `simGetSegmentationColorMap`. Meshes: `simListInstanceSegmentationObjects`. Poses: `simListInstanceSegmentationPoses(ned=True)` |
+| Lighting (10), Annotation (11) | absent | Cosys only. Annotation needs a layer-name argument. Neither is recorded |
+| Pose log | vehicle NED, quaternion wxyz | same columns, plus extra multirotor fields (latitude, accelerometer, ...). The parser keys by header name |
+| Live quaternion | Python `Quaternionr` fields are xyzw (`w_val` is the scalar); the capture client swaps to wxyz | same |
+| Camera mount | body frame, X forward, Y right, Z down | same, when `External` is false |
+| `External` | world pose, rejected | Unreal world coordinates. `ExternalLocal` true reports local NED from the vehicle start instead. `MoveWorldOrigin` true moves the Unreal origin to the player start. All three are a different frame from the body mount, so `External: true` is rejected |
+
+ImageType 5 is written as a sidecar (`segmentation.json` plus PNGs) when
+`--segmentation` is passed. It is not a depth channel and it is not part of the
+`[B, N, 62]` Gaussian. Colosseum object IDs and Cosys instance IDs share the
+integer 5 and an RGB encoding; they are different id spaces. The sidecar records
+which one. Infrared on Cosys is grey `(id, id, id)`, which is a different signal
+from a thermal image, and it is not recorded.
+
+`ImageResponse` also carries `camera_position` and `camera_orientation`. The
+capture script uses the vehicle pose plus the rigid body mount. That matches the
+image for a vehicle-mounted camera (`External` false). An external camera's
+response pose is in the other frame, which is why those settings are rejected
+up front.
 
 ### Rig
 
@@ -95,39 +132,54 @@ fx = fy = (W / 2) / tan(fov / 2)
 cx, cy = W / 2, H / 2
 ```
 
-Checked-in simulator config: `configs/rig/colosseum_settings.json`. Regenerate it with:
+Checked-in simulator configs:
+
+* Cosys-AirSim (maintained): `configs/rig/cosys_settings.json`
+* Colosseum (archived): `configs/rig/colosseum_settings.json`
+
+Regenerate either file with a dry run. No simulator is required:
 
 ```bash
+python scripts/capture_cosys_rig.py --dry-run --output outputs/cosys_settings
 python scripts/capture_colosseum_rig.py --dry-run --output outputs/colosseum_settings
 ```
 
-Copy that `settings.json` to the simulator's settings path before launching.
+Copy that `settings.json` to the simulator's settings path before launching
+(`Documents/AirSim/settings.json` for Cosys-AirSim).
 
 ### Record
 
 ```bash
+# Cosys-AirSim, with the cosysairsim client installed and a sim running
+python scripts/capture_cosys_rig.py --output data/cosys/flight --frames 100
+
+# Colosseum, archived, same flags. --simulator colosseum is the default here.
 python scripts/capture_colosseum_rig.py --output data/colosseum/flight --frames 100
 ```
 
 Each frame stores RGB and DepthPlanar (ImageType 1, camera-frame Z in meters). The
 writer converts the vehicle pose plus the mount into ENU/OpenCV world-to-camera
-extrinsics and writes a canonical recording (`dataset.json`). Load it with
-`data=airsim` (that config's `source` is `canonical`).
+extrinsics and writes a canonical recording (`dataset.json`). Load a Cosys capture
+with `data=cosys` and a Colosseum capture with `data=airsim`. Both configs use
+`source: canonical`.
 
 ### Legacy `airsim_rec.txt`
 
-`data.source=airsim_raw` parses the tab- or comma-separated log:
+`data.source=airsim_raw` parses the tab- or comma-separated log. Required columns:
 
 ```
 VehicleName  TimeStamp  POS_X POS_Y POS_Z  Q_W Q_X Q_Y Q_Z  ImageFile
 ```
 
-`ImageFile` is `;`-separated paths in `settings.json` camera order. `TimeStamp` is
-nanoseconds unless `data.airsim_raw.timestamp_unit` is set. Depth is picked up beside
-each RGB frame (`<stem>.pfm`, `<stem>_depth.npy`, or `depth/<stem>.npy`). Pose in the
-log is the vehicle in NED, quaternion wxyz. The live Python API stores the quaternion
-as xyzw fields (`w_val` is the scalar); the capture client swaps that before the
-conversion. Do not mix the two orders.
+Cosys-AirSim appends further columns (latitude, longitude, altitude, pressure,
+accelerometer). Those are skipped. `ImageFile` is `;`-separated paths in
+`settings.json` camera order and may sit in the middle of the header.
+`TimeStamp` is nanoseconds unless `data.airsim_raw.timestamp_unit` is set. Depth
+is picked up beside each RGB frame (`<stem>.pfm`, `<stem>_depth.npy`, or
+`depth/<stem>.npy`). Pose in the log is the vehicle in NED, quaternion wxyz.
+`data.airsim_raw.simulator` is `colosseum` or `cosys`; when it is omitted,
+`SettingsVersion` decides. `image_types.depth: depth_planar` keeps planar Z.
+`depth_perspective` selects Euclidean range. `depth_vis` is refused.
 
 ## Canonical recording
 

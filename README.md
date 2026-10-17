@@ -9,8 +9,9 @@ set of flight-frame anchors. The rasterizer, the glare head, and the occupancy
 head are still stubs.
 
 The flight frame is ENU Z-up, cameras are OpenCV, and extrinsics are
-world-to-camera. AirSim / Colosseum and TartanAir are converted into that frame
-on load. The packed Gaussian tensor later phases must emit is `[B, N, 62]`.
+world-to-camera. AirSim-family simulators (Cosys-AirSim and archived Colosseum)
+and TartanAir are converted into that frame on load. The packed Gaussian tensor
+later phases must emit is `[B, N, 62]`.
 `docs/ARCHITECTURE.md` defines the slices and the heads. `docs/DATASETS.md`
 covers formats and why the Stanford Drone Dataset is not used.
 
@@ -21,7 +22,7 @@ aerosplat/          package
   data/             sync, canonical / AirSim / TartanAir adapters, occupancy cache
   geometry/         poses, unprojection, voxelization, software raycast
   models/           ViT, plane-sweep lift, [B, N, 62] packer, Phase 3–5 stubs
-  capture/          Colosseum / Cosys-AirSim rig capture and render benchmark
+  capture/          AirSim-family rig capture (Cosys-AirSim, Colosseum) and render benchmark
   vis/              multi-camera alignment check
 configs/            Hydra configs (data + rig groups)
 fixtures/tiny_rig/  synthetic 4-camera recording, no download
@@ -66,18 +67,26 @@ itself, and reports where two cameras see the same surface. `--index 2` is the
 
 ## Real data
 
-Colosseum (the maintained AirSim fork) is the primary four-camera source.
-TartanAir is the public stereo set with depth and pose; it shares AirSim's
-coordinate conventions, which is why it is the second adapter. Mid-Air is a
-single forward camera and is not wired up. The Stanford Drone Dataset is a
-single overhead view with tracks and no calibration; it is not a multi-view
-training set.
+Cosys-AirSim is the maintained four-camera source. Colosseum, the previous
+AirSim fork, is archived (read-only); its adapter and
+`scripts/capture_colosseum_rig.py` stay for existing recordings. Both simulators
+share one backend (`--simulator cosys` or `--simulator colosseum`) because the
+Python APIs match. Settings version, the Scene-RGB flip, segmentation id space,
+and `External` pose frames differ and are handled in that backend.
+TartanAir is the public stereo set with depth and pose; it shares the AirSim
+NED convention, which is why it is the other adapter. Mid-Air is a single
+forward camera and is not wired up. The Stanford Drone Dataset is a single
+overhead view with tracks and no calibration; it is not a multi-view training set.
 
 ```bash
 # settings only, no simulator required
+python scripts/capture_cosys_rig.py --dry-run --output outputs/cosys_settings
 python scripts/capture_colosseum_rig.py --dry-run --output outputs/colosseum_settings
 
-# with the Colosseum Python client installed and a sim running
+# with the cosysairsim client installed and Cosys-AirSim running
+python scripts/capture_cosys_rig.py --output data/cosys/flight --frames 100
+
+# archived Colosseum client, same rig
 python scripts/capture_colosseum_rig.py --output data/colosseum/flight --frames 100
 
 # TartanAir trajectory (see docs/DATASETS.md for the directory layout)

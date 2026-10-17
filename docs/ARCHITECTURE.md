@@ -48,9 +48,11 @@ Every sample uses one frame, regardless of the source dataset.
 | Quaternion | wxyz, unit length, `w >= 0` when we convert from a matrix. |
 | Velocity | Meters per second in the world frame. The spec does not state a unit; this is the one the temporal loss can multiply by `Δt` in seconds. |
 
-AirSim, Colosseum, and TartanAir use NED (X north, Y east, Z down) and a camera
-with X forward, Y right, Z down. `aerosplat.geometry.coordinates` converts both.
-Skipping that conversion makes unprojection disagree with any OpenCV rasterizer.
+AirSim, Colosseum, Cosys-AirSim, and TartanAir use NED (X north, Y east, Z down)
+and a camera with X forward, Y right, Z down. `aerosplat.geometry.coordinates`
+converts that body-mounted rig. Cosys-AirSim `External` cameras are Unreal-world
+poses and are rejected. Skipping the conversion makes unprojection disagree
+with any OpenCV rasterizer.
 
 `R` and `t` on a `CameraFrame` are the pose at the image timestamp. `R_query` and
 `t_query` are the pose interpolated to the sample timestamp. Depth is unprojected
@@ -296,7 +298,7 @@ compile either extension.
 
 | Phase | Status | What it adds |
 | --- | --- | --- |
-| 1 Foundation, ingestion, calibration | this tree | schema, sync, Colosseum + TartanAir + fixture, occupancy cache, tensor contract |
+| 1 Foundation, ingestion, calibration | this tree | schema, sync, Colosseum + Cosys-AirSim + TartanAir + fixture, occupancy cache, tensor contract |
 | 2 ViT and 2D-to-3D lift | this tree | shared ViT, pose tokens, plane-sweep lift, depth pretrain |
 | 3 Splat parameter heads | stubbed | geometry, appearance, dynamics, pack into `[B, N, 62]` |
 | 4 Rasterizer and losses | stubbed | CUDA rasterizer, photometric, temporal, sparsity |
@@ -313,8 +315,9 @@ and React workbench are out of scope for Phase 1.
 These are disagreements with the attached spec, not silent edits.
 
 1. Stanford Drone Dataset cannot train this system. Single top-down camera, no
-   rig, no depth. TartanAir is the public depth+pose set. Colosseum is how a
-   four-camera rig gets recorded. Details in `docs/DATASETS.md`.
+   rig, no depth. TartanAir is the public depth+pose set. Cosys-AirSim is the
+   maintained four-camera recorder. Colosseum is archived and still supported.
+   Details in `docs/DATASETS.md`.
 2. "Lower bound on scale" contradicts `τ_max` and contradicts microscopic
    Gaussians. Implement the upper bound.
 3. Degree-3 SH does not isolate lens flare. The relight head has to be a

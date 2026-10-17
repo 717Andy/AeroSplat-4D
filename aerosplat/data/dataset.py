@@ -134,14 +134,21 @@ def build_dataset(cfg):
 
         scenes = read_canonical(root)
     elif source == "airsim_raw":
+        from aerosplat.airsim_family import depth_kind_from_image_type
         from aerosplat.data.adapters.airsim import read_airsim_raw
 
         raw = cfg.data.airsim_raw
+        simulator = str(raw.simulator) if "simulator" in raw and raw.simulator else None
+        depth_kind = None
+        if "image_types" in raw and raw.image_types and "depth" in raw.image_types:
+            depth_kind = depth_kind_from_image_type(str(raw.image_types.depth))
         scenes = {
             "flight": read_airsim_raw(
                 Path(str(raw.recording)),
                 Path(str(raw.settings)),
                 timestamp_unit=str(raw.timestamp_unit),
+                depth_kind=depth_kind,
+                simulator=simulator,
             )
         }
     elif source == "tartanair":

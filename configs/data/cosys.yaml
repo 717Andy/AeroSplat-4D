@@ -1,0 +1,26 @@
+# @package data
+# Cosys-AirSim recordings. Cosys-AirSim is the maintained AirSim-family
+# simulator (https://github.com/Cosys-Lab/Cosys-AirSim). Colosseum is archived;
+# its config remains at data=airsim.
+# source: canonical reads the recording written by scripts/capture_cosys_rig.py.
+# Set source: airsim_raw to parse airsim_rec.txt. Cosys appends extra columns
+# (latitude, accelerometer, ...); the parser keys the pose by header name.
+source: canonical
+root: data/cosys/flight
+load_depth: true
+sync:
+  policy: interpolate_pose
+  reference_camera: front
+  max_image_dt: 0.05
+  require_all_cameras: true
+airsim_raw:
+  simulator: cosys
+  recording: data/cosys/flight/airsim_rec.txt
+  settings: configs/rig/cosys_settings.json
+  timestamp_unit: nanoseconds
+  image_types:
+    rgb: scene
+    # depth_planar is ImageType 1 (camera-plane Z, meters).
+    # depth_perspective is ImageType 2 (Euclidean range) and becomes euclidean.
+    # depth_vis and disparity_normalized are not metric depth.
+    depth: depth_planar
