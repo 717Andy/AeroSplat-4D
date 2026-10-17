@@ -2,10 +2,11 @@
 
 Feedforward 4D Gaussian splatting for urban air mobility. A multi-camera UAV rig
 goes in; one forward pass predicts a Gaussian cloud with position, scale,
-orientation, opacity, degree-3 spherical harmonics, and a velocity. Later phases
-add a ViT backbone, a CUDA rasterizer, a glare head, and a local occupancy head.
-This repository is Phase 1: the package layout, the sample schema, calibration,
-and the ground-truth cache those heads will read.
+orientation, opacity, degree-3 spherical harmonics, and a velocity. Phase 1 is
+the sample schema, calibration, and the occupancy cache. Phase 2 is the shared
+ViT, pose-conditioned tokens, and the plane-sweep lift that hands Phase 3 a
+set of flight-frame anchors. The rasterizer, the glare head, and the occupancy
+head are still stubs.
 
 The flight frame is ENU Z-up, cameras are OpenCV, and extrinsics are
 world-to-camera. AirSim / Colosseum and TartanAir are converted into that frame
@@ -19,8 +20,8 @@ covers formats and why the Stanford Drone Dataset is not used.
 aerosplat/          package
   data/             sync, canonical / AirSim / TartanAir adapters, occupancy cache
   geometry/         poses, unprojection, voxelization, software raycast
-  models/           [B, N, 62] packer and Phase 2–5 stubs
-  capture/          Colosseum 4-camera settings and recorder
+  models/           ViT, plane-sweep lift, [B, N, 62] packer, Phase 3–5 stubs
+  capture/          Colosseum / Cosys-AirSim rig capture and render benchmark
   vis/              multi-camera alignment check
 configs/            Hydra configs (data + rig groups)
 fixtures/tiny_rig/  synthetic 4-camera recording, no download
@@ -28,8 +29,9 @@ scripts/            fixture, capture, cache, sanity
 tests/              CPU tests
 ```
 
-Phase 2–5 modules raise `NotImplementedError`. `diff-gaussian-rasterization` is
-not imported. CI is CPU-only lint and tests; it does not compile CUDA.
+Phase 3–5 heads and the rasterizer raise `NotImplementedError`.
+`diff-gaussian-rasterization` is not imported. CI is CPU-only lint and tests;
+it does not compile CUDA and it does not download pretrained weights.
 
 ## Install
 
@@ -88,8 +90,8 @@ Hydra overrides use the same `data=` and `rig=` groups as `configs/`.
 
 | Phase | Contents |
 | --- | --- |
-| 1 | This tree. Ingestion, calibration, occupancy cache, tensor contract. |
-| 2 | Shared ViT, pose tokens, epipolar lift. |
+| 1 | Ingestion, calibration, occupancy cache, tensor contract. |
+| 2 | Shared ViT, pose tokens, plane-sweep lift, depth pretraining. |
 | 3 | Geometry, appearance, and dynamics heads → `[B, N, 62]`. |
 | 4 | Differentiable rasterizer, photometric and temporal losses. |
 | 5 | Glare residual, occupancy head, export. |
@@ -103,3 +105,24 @@ not recoverable as text; do not implement a guessed formula as if it were exact.
 
 `pytest` generates its own tiny recordings under the temp directory and also
 reads `fixtures/tiny_rig`. No dataset download and no GPU.
+
+## Phase 2
+
+The lifter is `aerosplat.models.build_lifter`. It returns per-camera features,
+a depth distribution, and `[B, N, 3]` anchors in the flight frame. `N` is the
+number of lift cells; Phase 3 packs those into `[B, N, 62]` once the other
+heads exist. `docs/ARCHITECTURE.md` records why the lift is a plane sweep.
+
+Laptop training budgets are in `configs/model/`: ViT-S at 224px for 8 GB,
+ViT-B at 224px for 16 GB, batch size 1, four cameras. `vit_large` matches an
+aerial DUSt3R / MASt3R checkpoint and does not fit that budget unfrozen.
+
+```bash
+python scripts/pretrain_depth.py
+```
+
+That runs two depth-supervised steps of the tiny model on the fixture, on CPU.
+
+Rendering speed of the 4-camera rig is a separate measurement.
+`docs/BENCHMARK.md` is the Windows / Unreal walkthrough for an MSI Vector 17
+HX with an NVIDIA RTX GPU. The script is `scripts/benchmark_sim_render.py`.

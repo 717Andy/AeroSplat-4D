@@ -1,0 +1,16 @@
+# @package data
+# CC BY 4.0. Download a subset with tartanairpy; do not pull the whole 54 TB.
+# Poses are converted with the V1 AirSim-camera convention. That axis mapping
+# is still unconfirmed for V2; see docs/ARCHITECTURE.md.
+source: tartanair_v2
+root: data/tartanair_v2
+load_depth: true
+fps: 10.0
+# Empty means every pose_<camera>.txt in the trajectory.
+cameras: null
+max_frames: null
+sync:
+  policy: nearest
+  reference_camera: lcam_front
+  max_image_dt: 1.0e-6
+  require_all_cameras: true

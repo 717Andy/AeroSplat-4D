@@ -1,0 +1,36 @@
+# @package model
+# DINOv2 ViT-B/14 width. This is the 16 GB laptop setting, not the 8 GB one.
+name: vit_base
+pretrained: null
+pretrained_allow_download: false
+img_size: 224
+patch_size: 14
+embed_dim: 768
+depth: 12
+num_heads: 12
+mlp_ratio: 4.0
+out_indices: [3, 7, 11]
+cross_view_layers: 2
+pose_encoding: plucker+sinusoidal
+pose_zero_init: true
+num_frequencies: 6
+normalize: imagenet
+gradient_checkpointing: true
+init_values: 1.0
+depth_planes: 32
+depth_near: 0.5
+depth_far: 80.0
+depth_spacing: inverse
+lift_stride: 14
+temperature: 0.02
+memory:
+  min_vram_gb: 8
+  max_vram_gb: 16
+  recommended_resolution: 224
+  batch_size: 1
+  cameras: 4
+  note: >
+    ViT-B/14 with 4 cameras at 224px, 32 depth planes, batch 1, and gradient
+    checkpointing is the 16 GB target on the laptop GPU. It does not fit an
+    8 GB card; use vit_small there. 336px is past 16 GB once cross-view
+    attention and the cost volume are both live. Do not train at 1080p.

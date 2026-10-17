@@ -1,0 +1,41 @@
+# @package model
+# DINOv2 ViT-S/14 width. This is the 8 GB laptop setting.
+name: vit_small
+# Local DINOv2 checkpoint, or dinov2_vits14 with pretrained_allow_download: true.
+# An aerial DUSt3R / MASt3R checkpoint is ViT-L and does not match this width;
+# use vit_large for that file, and only if the GPU can hold it.
+pretrained: null
+pretrained_allow_download: false
+img_size: 224
+patch_size: 14
+embed_dim: 384
+depth: 12
+num_heads: 6
+mlp_ratio: 4.0
+out_indices: [3, 7, 11]
+cross_view_layers: 2
+pose_encoding: plucker+sinusoidal
+# Zero-init so a loaded DINOv2 encoder is unchanged until the pose layers train.
+pose_zero_init: true
+num_frequencies: 6
+normalize: imagenet
+gradient_checkpointing: true
+init_values: 1.0
+depth_planes: 32
+depth_near: 0.5
+depth_far: 80.0
+depth_spacing: inverse
+lift_stride: 14
+temperature: 0.02
+memory:
+  min_vram_gb: 8
+  max_vram_gb: 16
+  recommended_resolution: 224
+  batch_size: 1
+  cameras: 4
+  note: >
+    MSI Vector 17 HX class laptop, 8–16 GB NVIDIA VRAM. ViT-S/14, 4 cameras,
+    224px, 32 depth planes, batch 1, gradient checkpointing is the 8 GB target.
+    336px fits more comfortably at 12–16 GB. Do not train this model at 1080p;
+    the benchmark script measures the simulator at 1080p, not the network.
+    518px (the DINOv2 native grid) needs the 16 GB card and still wants batch 1.

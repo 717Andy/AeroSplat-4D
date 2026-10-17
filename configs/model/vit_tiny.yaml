@@ -1,0 +1,35 @@
+# @package model
+# CPU smoke model. Tests and scripts/pretrain_depth.py use this. It is not a
+# training recipe for the laptop GPU; see vit_small and vit_base for that.
+name: vit_tiny
+pretrained: null
+pretrained_allow_download: false
+img_size: 32
+patch_size: 8
+embed_dim: 32
+depth: 2
+num_heads: 4
+mlp_ratio: 2.0
+out_indices: [1]
+cross_view_layers: 1
+pose_encoding: plucker
+pose_zero_init: false
+num_frequencies: 4
+normalize: none
+gradient_checkpointing: false
+init_values: 1.0
+depth_planes: 8
+depth_near: 0.4
+depth_far: 12.0
+depth_spacing: linear
+lift_stride: 4
+temperature: 0.02
+memory:
+  min_vram_gb: 8
+  max_vram_gb: 16
+  recommended_resolution: 32
+  batch_size: 1
+  cameras: 4
+  note: >
+    Unit-test width only. On an 8–16 GB laptop GPU train with vit_small (8 GB
+    at 224px) or vit_base (16 GB at 224px), batch size 1, four cameras.

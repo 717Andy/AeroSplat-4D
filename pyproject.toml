@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "aerosplat"
-version = "0.1.0"
+version = "0.2.0"
 description = "Feedforward 4D Gaussian splatting for Urban Air Mobility"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -40,6 +40,8 @@ aerosplat-fixture = "aerosplat.data.fixture:main"
 aerosplat-sanity = "aerosplat.vis.alignment:main"
 aerosplat-cache = "aerosplat.data.cli:main"
 aerosplat-capture = "aerosplat.capture.colosseum:main"
+aerosplat-pretrain = "aerosplat.models.pretrain:main"
+aerosplat-benchmark = "aerosplat.capture.benchmark:main"
 
 [tool.setuptools.packages.find]
 include = ["aerosplat*"]

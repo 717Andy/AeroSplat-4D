@@ -3,7 +3,7 @@
 from aerosplat.models.gaussians import GAUSSIAN_DIM, GaussianLayout
 from aerosplat.schema import CameraFrame, MultiCameraSample
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = [
     "GAUSSIAN_DIM",
