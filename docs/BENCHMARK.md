@@ -19,21 +19,11 @@ You need two programs talking to each other:
 
 ## Which sim to install
 
-Use **Cosys-AirSim**. It speaks the same Python API as the Colosseum / AirSim
-client this repo already uses (`import airsim`), it tracks a current Unreal
-Engine 5, and it can label extra layers (useful later for wires).
-
-* Repository: https://github.com/Cosys-Lab/Cosys-AirSim
-* As of October 2026 the main branch is built for **Unreal Engine 5.8**.
-  Install that exact engine version. A plugin built for 5.8 will not open in
-  5.4 or 5.6.
-* License: MIT. The city or map you load has its own license.
-
-**Colosseum** (https://github.com/CodexLabsLLC/Colosseum) is the AirSim fork
-Phase 1 targeted. Its GitHub repo is archived, so it will not get fixes. The
-main branch's own README says it supports **Unreal Engine 5.6** only. Use it
-only if you already have a 5.6 project. The benchmark script talks to it the
-same way (`import colosseum` or `import airsim`).
+Two simulators are supported. They share the pause / step / `simGetImages`
+calls, and they do not share a Python package or a settings file. Colosseum is
+the script default. Cosys-AirSim is the maintained one. Pick one section below
+and stay in it: a Colosseum `settings.json` (version 1.2) is refused by
+Cosys-AirSim, and `import airsim` does not load the Cosys client.
 
 Do not use the MatrixCity plugin for this benchmark. That plugin is pinned to
 Unreal 5.0.3 and renders through Movie Render Queue, which is an offline path.
@@ -59,20 +49,68 @@ pixel-perfect click path.
    (`PowerShell` or `Command Prompt`) and run `nvidia-smi`. You should see the
    GPU name and a VRAM number (8 GB, 12 GB, 16 GB, …). If the command is not
    found, the driver is not on the PATH yet; install it and open a new terminal.
-4. Clone the sim repository and follow its **Windows** build or install page.
-   Cosys-AirSim documents a `build.cmd` (or the equivalent in that README) that
-   registers the plugin and produces the Blocks project. The first build is
-   long. Leave the laptop plugged in.
-5. Install the Python client from that same repo, into the environment you use
-   for this project:
+4. Clone the sim repository from the section you picked and follow its
+   **Windows** build or install page. Cosys-AirSim documents a `build.cmd` (or
+   the equivalent in that README) that registers the plugin and produces the
+   Blocks project. The first build is long. Leave the laptop plugged in.
+5. Install that sim's Python client, from the section below, into the
+   environment you use for this project. This repo does not pip-depend on
+   either client, because CI has no simulator.
 
-   ```powershell
-   cd Cosys-AirSim\PythonClient
-   pip install -e .
-   ```
+### Cosys-AirSim
 
-   Colosseum's client is the same shape. `import airsim` should succeed. This
-   repo does not pip-depend on that client, because CI has no simulator.
+Maintained. Use this when you are installing a sim from scratch.
+
+* Repository: https://github.com/Cosys-Lab/Cosys-AirSim
+* Unreal Engine **5.8** as of October 2026. A plugin built for 5.8 will not
+  open in 5.4 or 5.6. If the sim README has moved on, use the version it names.
+* License: MIT. The city or map you load has its own license.
+* Settings file: **SettingsVersion 2.0**. Each camera is a vehicle mount
+  (`External` false, `ExternalLocal` false) and `MoveWorldOrigin` is false.
+  Segmentation (image type 5) is an instance color index, not a Colosseum
+  mesh-object id.
+* Python package: `cosysairsim`. Installing the Cosys client does **not**
+  make `import airsim` work, and the benchmark will not try `airsim` in this
+  mode. A leftover Colosseum install must not answer a Cosys session.
+
+```powershell
+cd Cosys-AirSim\PythonClient
+pip install -e .
+python -c "import cosysairsim; print('cosysairsim', cosysairsim.__file__)"
+```
+
+```powershell
+python scripts\benchmark_sim_render.py --simulator cosys --write-settings --output outputs\benchmark
+```
+
+That writes `settings_cosys_1080p.json` and `settings_cosys_720p.json`.
+
+### Colosseum
+
+Archived (read-only). This is the script default, for a machine that already
+has a Colosseum project. Its GitHub repo will not get fixes. The main branch's
+own README says it supports **Unreal Engine 5.6** only.
+
+* Repository: https://github.com/CodexLabsLLC/Colosseum
+* Settings file: **SettingsVersion 1.2**. No Cosys `External` or
+  `MoveWorldOrigin` flags. Segmentation (image type 5) is an RGB palette of
+  mesh-name object ids.
+* Python package: the Colosseum `PythonClient` installs as `airsim`. Some
+  builds also expose `colosseum`. The benchmark tries `import airsim`, then
+  `import colosseum`. It does not import `cosysairsim` in this mode.
+
+```powershell
+cd Colosseum\PythonClient
+pip install -e .
+python -c "import airsim; print('airsim', airsim.__file__)"
+```
+
+```powershell
+python scripts\benchmark_sim_render.py --simulator colosseum --write-settings --output outputs\benchmark
+```
+
+`--simulator colosseum` is the default, so omitting the flag writes the same
+files: `settings_colosseum_1080p.json` and `settings_colosseum_720p.json`.
 
 ## Where settings.json goes
 
@@ -90,17 +128,15 @@ game is running does nothing until you stop and press Play again. 1080p and
 720p are two separate launches for that reason. The RPC cannot resize a camera
 that was created from the old file.
 
-Generate both files from the repo (this does not need the sim running):
+Generate both resolutions from the repo (this does not need the sim running).
+Use the flag that matches the sim you installed. See the two sections above
+for the exact command. You get a pair named for that simulator:
 
-```powershell
-cd C:\path\to\aerosplat
-python scripts\benchmark_sim_render.py --write-settings --output outputs\benchmark
-```
+* `settings_<simulator>_1080p.json` — 1920×1080
+* `settings_<simulator>_720p.json` — 1280×720
 
-You get:
-
-* `outputs\benchmark\settings_1080p.json` — 1920×1080
-* `outputs\benchmark\settings_720p.json` — 1280×720
+`<simulator>` is `cosys` or `colosseum`. Copy the file from the sim you are
+actually launching. A 1.2 file will not start a Cosys session.
 
 Each one mounts the four cameras from `configs/rig/uam_quad.yaml`:
 
@@ -141,14 +177,17 @@ the wrong folder, or another program already grabbed port 41451.
 From the repo, with Play still running:
 
 ```powershell
-python scripts\benchmark_sim_render.py --resolution 1080p --output outputs\benchmark
+python scripts\benchmark_sim_render.py --simulator cosys --resolution 1080p --output outputs\benchmark
 ```
 
-Then stop Play, copy `settings_720p.json` onto `Documents\AirSim\settings.json`,
-press Play again, and run:
+Use `--simulator colosseum` instead when Play was started from the Colosseum
+settings file. The flag has to match the sim that is running. Then stop Play,
+copy `settings_<simulator>_720p.json` onto `Documents\AirSim\settings.json`,
+press Play again, and run the same command with `--resolution 720p` and a
+separate output folder:
 
 ```powershell
-python scripts\benchmark_sim_render.py --resolution 720p --output outputs\benchmark_720p
+python scripts\benchmark_sim_render.py --simulator cosys --resolution 720p --output outputs\benchmark_720p
 ```
 
 `--resolution both` tries both sizes in one process. The second size will be
@@ -174,6 +213,8 @@ Useful flags:
 | `--warmup 2` | captures thrown away before the timing |
 | `--ip 127.0.0.1` | the machine running Unreal. Use the laptop's address only if Python is on another computer |
 | `--dt 0.05` | simulated seconds per step |
+| `--simulator colosseum` | default. Imports `airsim` then `colosseum`, SettingsVersion 1.2 |
+| `--simulator cosys` | Imports `cosysairsim` only, SettingsVersion 2.0 and the Cosys camera flags |
 
 ## Read the report
 
@@ -195,8 +236,12 @@ if you can. The city number is the one that sizes the 4D dataset.
 
 ## If something fails
 
-* `Could not import the simulator client` — the Python client is not installed
-  in this environment. See the `pip install -e` step above.
+* `Could not import the cosys client` — `cosysairsim` is not installed in this
+  environment. Installing Colosseum's `airsim` package does not fix it. See
+  the Cosys-AirSim section above.
+* `Could not import the colosseum client` — neither `airsim` nor `colosseum`
+  is installed. See the Colosseum section above. Do not point this flag at a
+  Cosys install.
 * `empty image` or a camera name error — `settings.json` was not the file the
   sim loaded. Check `Documents\AirSim\settings.json` and restart Play.
 * The editor crashes on Play — the map is too heavy for the laptop's RAM, or

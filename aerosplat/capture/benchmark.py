@@ -17,7 +17,11 @@ Image types, classic AirSim numbering:
 * 1 DepthPlanar (camera-frame Z, meters)
 * 5 Segmentation
 
-Cosys-AirSim speaks the same RPC, which is why one client path covers both.
+``--simulator`` selects the shared AirSim-family profile. ``colosseum`` (the
+default) imports ``airsim`` then ``colosseum`` and writes SettingsVersion 1.2.
+``cosys`` imports ``cosysairsim`` only and writes SettingsVersion 2.0 with the
+Cosys camera flags. The two clients are not interchangeable: a leftover
+Colosseum install must not answer a Cosys session.
 """
 
 from __future__ import annotations
@@ -34,7 +38,8 @@ from typing import Protocol
 
 import numpy as np
 
-from aerosplat.capture.colosseum import build_settings
+from aerosplat.airsim_family import SIMULATORS, get_profile
+from aerosplat.capture.airsim import _connect, build_settings
 from aerosplat.data.errors import DataError
 
 RGB = 0
@@ -82,11 +87,19 @@ class GrabResult:
     time_stamp: int = 0
 
 
-def build_benchmark_settings(rig: dict, height: int, width: int) -> dict:
+def build_benchmark_settings(
+    rig: dict,
+    height: int,
+    width: int,
+    simulator: str = "colosseum",
+) -> dict:
     """Rig settings at one resolution, with RGB, planar depth, and segmentation.
 
-    The mount poses stay the ones in ``rig``. Only the capture size changes,
-    and segmentation (image type 5) is added beside Scene and DepthPlanar.
+    The mount poses stay the ones in ``rig``. Only the capture size changes.
+    ``simulator`` is ``colosseum`` (default, SettingsVersion 1.2) or ``cosys``
+    (SettingsVersion 2.0, ``External`` false, ``MoveWorldOrigin`` false).
+    Segmentation is ImageType 5 on both; the id space differs and is recorded
+    by the shared settings builder.
     """
     if height < 1 or width < 1:
         raise ValueError("resolution must be positive")
@@ -97,19 +110,7 @@ def build_benchmark_settings(rig: dict, height: int, width: int) -> dict:
     }
     for name, cam in rig["cameras"].items():
         adjusted["cameras"][name] = {**cam, "width": width, "height": height}
-    settings = build_settings(adjusted)
-    vehicle = next(iter(settings["Vehicles"]))
-    for cam in settings["Vehicles"][vehicle]["Cameras"].values():
-        fov = cam["CaptureSettings"][0]["FOV_Degrees"]
-        cam["CaptureSettings"].append(
-            {
-                "ImageType": SEGMENTATION,
-                "Width": width,
-                "Height": height,
-                "FOV_Degrees": fov,
-            }
-        )
-    return settings
+    return build_settings(adjusted, simulator, record_segmentation=True)
 
 
 def query_nvidia_smi() -> dict | None:
@@ -224,6 +225,7 @@ def render_markdown(report: dict) -> str:
     else:
         lines.append("GPU: nvidia-smi did not return a device.")
     lines.append("")
+    lines.append(f"Simulator: {report.get('simulator', 'unspecified')}")
     lines.append(f"Sim client: {report.get('client', 'unspecified')}")
     lines.append(f"Cameras: {', '.join(report.get('cameras', []))}")
     lines.append("")
@@ -271,7 +273,7 @@ def write_report(directory: Path, report: dict) -> tuple[Path, Path]:
 
 
 class AirSimBenchClient:
-    """Pause / step / grab against a live ``airsim`` or ``colosseum`` client."""
+    """Pause / step / grab against the client ``connect`` imported."""
 
     def __init__(self, api, module) -> None:
         self.api = api
@@ -300,23 +302,14 @@ class AirSimBenchClient:
         return list(self.api.simGetImages(image_requests))
 
 
-def connect(ip: str):
-    """Import ``airsim`` or ``colosseum`` and confirm the RPC connection."""
-    module = None
-    errors = []
-    for name in ("airsim", "colosseum"):
-        try:
-            module = __import__(name)
-            break
-        except ImportError as exc:
-            errors.append(f"{name}: {exc}")
-    if module is None:
-        raise DataError(
-            "Could not import the simulator client (tried airsim, colosseum). "
-            "Install the PythonClient from Cosys-AirSim or Colosseum. " + " | ".join(errors)
-        )
-    api = module.MultirotorClient(ip=ip) if ip else module.MultirotorClient()
-    api.confirmConnection()
+def connect(ip: str, simulator: str = "colosseum"):
+    """Import the profile's client and confirm the RPC connection.
+
+    ``colosseum`` tries ``airsim`` then ``colosseum``. ``cosys`` tries
+    ``cosysairsim`` only. Both go through the shared AirSim-family connector.
+    """
+    profile = get_profile(simulator)
+    api, module = _connect(ip, profile)
     return api, module, module.__name__
 
 
@@ -365,6 +358,16 @@ def main(argv: list[str] | None = None) -> None:
     )
     parser.add_argument("--output", type=Path, default=Path("outputs/benchmark"))
     parser.add_argument("--ip", default="127.0.0.1")
+    parser.add_argument(
+        "--simulator",
+        choices=list(SIMULATORS),
+        default="colosseum",
+        help=(
+            "colosseum (default) imports airsim or colosseum and writes "
+            "SettingsVersion 1.2. cosys imports cosysairsim only and writes "
+            "SettingsVersion 2.0 with the Cosys camera flags."
+        ),
+    )
     parser.add_argument("--frames", type=int, default=10)
     parser.add_argument("--warmup", type=int, default=2)
     parser.add_argument("--dt", type=float, default=0.05, help="Sim step in seconds while paused.")
@@ -390,16 +393,19 @@ def main(argv: list[str] | None = None) -> None:
     cameras = list(rig["cameras"])
     args.output.mkdir(parents=True, exist_ok=True)
     for label, (height, width) in RESOLUTIONS.items():
-        settings = build_benchmark_settings(rig, height, width)
-        path = args.output / f"settings_{label}.json"
+        settings = build_benchmark_settings(rig, height, width, args.simulator)
+        path = args.output / f"settings_{args.simulator}_{label}.json"
         path.write_text(json.dumps(settings, indent=2) + "\n")
         print(f"wrote {path}")
     if args.write_settings:
-        print("Copy the file you want to Documents\\AirSim\\settings.json and restart Play.")
+        print(
+            f"Copy the {args.simulator} file you want to "
+            "Documents\\AirSim\\settings.json and restart Play."
+        )
         return
 
     selected = _selected_resolutions(args.resolution)
-    api, module, client_name = connect(args.ip)
+    api, module, client_name = connect(args.ip, args.simulator)
     client = AirSimBenchClient(api, module)
     runs = []
     for height, width in selected:
@@ -416,6 +422,7 @@ def main(argv: list[str] | None = None) -> None:
             )
         )
     report = {
+        "simulator": args.simulator,
         "client": client_name,
         "ip": args.ip,
         "gpu": query_nvidia_smi(),
