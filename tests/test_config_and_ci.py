@@ -5,7 +5,7 @@ from pathlib import Path
 
 from omegaconf import OmegaConf
 
-from aerosplat.capture.colosseum import build_settings
+from aerosplat.capture.airsim import build_settings
 from aerosplat.config import load_config
 from aerosplat.data.fixture import camera_pose, default_fixture_root
 from aerosplat.data.records import SyncConfig, sync_config_from_dict
@@ -27,13 +27,30 @@ def test_hydra_groups_switch_dataset():
 def test_checked_in_settings_match_the_rig_yaml():
     cfg = load_config()
     rig = OmegaConf.to_container(cfg.rig, resolve=True)
-    generated = build_settings(rig)
+    generated = build_settings(rig, "colosseum")
     committed = json.loads(
         (Path(__file__).parents[1] / "configs" / "rig" / "colosseum_settings.json").read_text()
     )
     assert generated == committed
     names = list(generated["Vehicles"]["Drone1"]["Cameras"])
     assert names == ["front", "down", "port", "starboard"]
+    assert "External" not in generated["Vehicles"]["Drone1"]["Cameras"]["front"]
+
+    cosys_cfg = load_config(["data=cosys"])
+    assert cosys_cfg.data.airsim_raw.simulator == "cosys"
+    assert cosys_cfg.data.root == "data/cosys/flight"
+    cosys = build_settings(rig, "cosys")
+    committed_cosys = json.loads(
+        (Path(__file__).parents[1] / "configs" / "rig" / "cosys_settings.json").read_text()
+    )
+    assert cosys == committed_cosys
+    assert cosys["SettingsVersion"] == 2.0
+    assert cosys["MoveWorldOrigin"] is False
+    assert cosys["InitialInstanceSegmentation"] is True
+    front = cosys["Vehicles"]["Drone1"]["Cameras"]["front"]
+    assert front["External"] is False
+    assert front["ExternalLocal"] is False
+    assert [entry["ImageType"] for entry in front["CaptureSettings"]] == [0, 1]
 
 
 def test_ci_does_not_install_a_cuda_rasterizer():

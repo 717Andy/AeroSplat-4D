@@ -1,5 +1,8 @@
 # @package data
-# Canonical recordings written by scripts/capture_colosseum_rig.py.
+# Colosseum recordings. The Colosseum repo is archived (read-only).
+# This config stays so existing captures still load. New flights should use
+# data=cosys (Cosys-AirSim, the maintained AirSim-family simulator).
+# source: canonical reads the recording written by scripts/capture_colosseum_rig.py.
 # Set source: airsim_raw to parse a legacy airsim_rec.txt + settings.json instead.
 source: canonical
 root: data/colosseum/flight
@@ -10,9 +13,10 @@ sync:
   max_image_dt: 0.05
   require_all_cameras: true
 airsim_raw:
+  simulator: colosseum
   recording: data/colosseum/flight/airsim_rec.txt
   settings: configs/rig/colosseum_settings.json
-  # Colosseum/AirSim TimeStamp is a nanosecond clock. Use "seconds" only for
+  # AirSim-family TimeStamp is a nanosecond clock. Use "seconds" only for
   # recordings that were already converted.
   timestamp_unit: nanoseconds
   image_types:

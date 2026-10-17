@@ -1,10 +1,10 @@
 """TartanAir adapter.
 
 TartanAir (https://theairlab.org/tartanair-dataset/) was rendered in AirSim, so
-its pose and depth conventions match Colosseum: NED world, camera X forward /
-Y right / Z down, planar depth in meters, and a ``tx ty tz qx qy qz qw`` line
-per frame. That shared convention is why this adapter exists instead of a
-Mid-Air one. See ``docs/DATASETS.md``.
+its pose and depth conventions match the AirSim family (Colosseum and
+Cosys-AirSim): NED world, camera X forward / Y right / Z down, planar depth in
+meters, and a ``tx ty tz qx qy qz qw`` line per frame. That shared convention
+is why this adapter exists instead of a Mid-Air one. See ``docs/DATASETS.md``.
 
 The public stereo pair is a forward left/right rig, not a four-camera UAM rig.
 Camera names in the sample are ``left`` and ``right``. Trajectories have no
