@@ -26,6 +26,18 @@ depth_far: 80.0
 depth_spacing: inverse
 lift_stride: 16
 temperature: 0.02
+splats:
+  slots_per_cell: 4
+  max_extra_gaussians: 1024
+  edge_threshold: 0.4
+  min_scale_m: 1.0e-4
+  max_scale_m: 2.0
+  wire_transverse_max_m: 0.03
+  wire_long_max_m: 1.0
+  note: >
+    The splat budget matches the 8–16 GB laptop recipes. ViT-L itself does
+    not fit that budget unfrozen at 4 cameras. N at 224 px, stride 16, 4
+    cameras, 4 slots is 4 * 14 * 14 * 4 = 3136.
 memory:
   min_vram_gb: 8
   max_vram_gb: 16
