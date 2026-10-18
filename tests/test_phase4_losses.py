@@ -108,12 +108,20 @@ def test_occupancy_bce_matches_the_two_voxel_closed_form_and_masks_unknown():
         head.logit,
     )[0]
     assert float(grad.abs()) > 0
-    raised = False
-    try:
-        OccupancyHead()(torch.zeros(1, 4))
-    except NotImplementedError:
-        raised = True
-    assert raised
+    # The placeholder stays for this broadcast test. The real head is a volume.
+    real = OccupancyHead(hidden=4)
+    tiny = real(
+        torch.zeros(1, 1, 3),
+        torch.ones(1, 1),
+        torch.zeros(1, 1),
+        torch.ones(1, 1, dtype=torch.bool),
+        torch.zeros(3),
+        0.5,
+        (2, 2, 2),
+        torch.full((1, 1, 3), 0.05),
+        torch.zeros(1, 1, 3),
+    )
+    assert tiny.wire_logits.shape == (1, 2, 2, 2)
 
 
 def test_velocity_supervision_is_squared_l2_on_valid_slots():

@@ -20,11 +20,12 @@ by the static slot count ``N``. The division is the one change from the
 written sum, so ``λ5`` does not grow when the rig gets more slots. The Phase 3
 anisotropic wire cap is a separate hard constraint and stays on.
 
-``L_occ`` defaults to a mean over known voxels (unknown masked). ``pos_weight``
-and a focal gamma are optional. ``λ4`` defaults to 0 until the Phase 5 head
-replaces the placeholder. ``L_velocity`` is an extra term, not one of Andy's
-five: squared error against a logged actor velocity, weight 0 unless a sim
-export provides it.
+``L_occ`` is a mean over known voxels (unknown masked), plus the same BCE on
+the wire channel with a higher positive weight. ``pos_weight`` and a focal
+gamma are optional. The YAML default for ``λ4`` is above zero. ``L_velocity``
+is an extra term, not one of Andy's five: squared error against a logged
+actor velocity, weight 0 unless a sim export provides it. A glare-separation
+term sits beside the five when a paired flare is known.
 """
 
 from __future__ import annotations
@@ -55,6 +56,12 @@ class LossWeights:
     occ: float = 0.0
     sparse: float = 0.01
     velocity: float = 0.0
+    # Separation against a known flare layer. The YAML default is above zero;
+    # this dataclass stays at zero so a caller that omits weights does not
+    # suddenly supervise glare. ``glare_l1`` keeps the layer dark where no
+    # flare was added, so it cannot swallow the scene.
+    glare: float = 0.0
+    glare_l1: float = 0.0
 
 
 @dataclass
@@ -68,9 +75,10 @@ class LossOutput:
     occ: Tensor
     sparse: Tensor
     velocity: Tensor
+    glare: Tensor
 
     def scalars(self) -> dict[str, float]:
-        names = ("total", "photo", "ssim", "temp", "occ", "sparse", "velocity")
+        names = ("total", "photo", "ssim", "temp", "occ", "sparse", "velocity", "glare")
         return {name: float(getattr(self, name).detach().cpu()) for name in names}
 
 
@@ -225,6 +233,74 @@ def occupancy_target_from_grid(grid) -> tuple[Tensor, Tensor]:
     return target, known
 
 
+def glare_separation_loss(
+    predicted: dict[str, Tensor],
+    target: dict[str, Tensor],
+    mask: dict[str, Tensor] | None = None,
+) -> Tensor:
+    """Mean absolute error of the glare layer, optionally inside a mask.
+
+    The mask is 1 where the flare is known. Pixels outside it do not pull the
+    layer. An empty mask returns zero connected to ``predicted``.
+    """
+    terms = []
+    for name, layer in predicted.items():
+        if name not in target:
+            raise KeyError(f"glare camera {name!r} has no target layer")
+        goal = target[name]
+        if layer.shape != goal.shape:
+            raise ValueError(
+                f"camera {name}: glare {tuple(layer.shape)} != target {tuple(goal.shape)}"
+            )
+        if mask is None or name not in mask:
+            terms.append((layer - goal).abs().mean())
+            continue
+        weight = mask[name].to(dtype=layer.dtype)
+        if weight.shape[-2:] != layer.shape[-2:]:
+            raise ValueError(f"camera {name}: glare mask spatial size does not match")
+        while weight.ndim < layer.ndim:
+            weight = weight.unsqueeze(0)
+        if weight.shape[1] == 1 and layer.shape[1] == 3:
+            weight = weight.expand_as(layer)
+        denom = weight.sum().clamp_min(1.0)
+        terms.append(((layer - goal).abs() * weight).sum() / denom)
+    if not terms:
+        raise ValueError("glare separation needs at least one camera")
+    return torch.stack(terms).mean()
+
+
+def glare_l1_penalty(predicted: dict[str, Tensor], mask: dict[str, Tensor] | None = None) -> Tensor:
+    """Mean glare, outside the known flare mask when one is given.
+
+    Inside the mask the separation loss is in charge. Outside it, the layer
+    should stay dark so a building is not explained as flare.
+    """
+    terms = []
+    for name, layer in predicted.items():
+        if mask is None or name not in mask:
+            terms.append(layer.mean())
+            continue
+        weight = mask[name].to(dtype=layer.dtype)
+        while weight.ndim < layer.ndim:
+            weight = weight.unsqueeze(0)
+        if weight.shape[1] == 1 and layer.shape[1] == 3:
+            weight = weight.expand_as(layer)
+        outside = 1.0 - weight
+        denom = outside.sum().clamp_min(1.0)
+        terms.append((layer * outside).sum() / denom)
+    if not terms:
+        raise ValueError("glare penalty needs at least one camera")
+    return torch.stack(terms).mean()
+
+
+def wire_target_from_grid(grid) -> Tensor:
+    """1 on cells a segmented wire sample landed in, else 0. Same rank as ``state``."""
+    wire = grid.wire
+    if wire is None:
+        return torch.zeros_like(torch.as_tensor(grid.state), dtype=torch.float32)
+    return torch.as_tensor(wire).to(dtype=torch.float32).clamp(0, 1)
+
+
 def velocity_supervision(
     cloud: GaussianCloud,
     gt_velocity: Tensor,
@@ -267,6 +343,13 @@ def composite_loss(
     occ_known: Tensor | None = None,
     gt_velocity: Tensor | None = None,
     gt_velocity_mask: Tensor | None = None,
+    glare: dict[str, Tensor] | None = None,
+    glare_target: dict[str, Tensor] | None = None,
+    glare_mask: dict[str, Tensor] | None = None,
+    wire_logits: Tensor | None = None,
+    wire_target: Tensor | None = None,
+    wire_pos_weight: float = 8.0,
+    wire_focal_gamma: float = 2.0,
     weights: LossWeights | None = None,
     tau_max: float = 0.008,
     ssim_window: int = 11,
@@ -312,6 +395,18 @@ def composite_loss(
             focal_gamma=occ_focal_gamma,
             reduction=occ_reduction,
         )
+        if wire_logits is not None and wire_target is not None:
+            # Andy's term is one BCE. The wire channel is the same loss on the
+            # cells a cable actually crossed, with a higher positive weight so
+            # a missed cable costs more than a missed facade.
+            occupied = occupied + occupancy_bce(
+                wire_logits,
+                wire_target,
+                occ_known,
+                pos_weight=wire_pos_weight,
+                focal_gamma=wire_focal_gamma,
+                reduction=occ_reduction,
+            )
     else:
         occupied = zero_source
     sparse = sparsity_loss(cloud.packed, tau_max) if cloud is not None else zero_source
@@ -319,6 +414,15 @@ def composite_loss(
         velocity = velocity_supervision(cloud, gt_velocity, gt_velocity_mask)
     else:
         velocity = zero_source
+    if glare is not None and glare_target is not None:
+        separated = glare_separation_loss(glare, glare_target, glare_mask)
+    else:
+        separated = zero_source
+    if glare is not None:
+        dark = glare_l1_penalty(glare, glare_mask if glare_target is not None else None)
+    else:
+        dark = zero_source
+    glare_term = separated + dark
     total = (
         float(weights.photo) * photo
         + float(weights.ssim) * structural
@@ -326,6 +430,8 @@ def composite_loss(
         + float(weights.occ) * occupied
         + float(weights.sparse) * sparse
         + float(weights.velocity) * velocity
+        + float(weights.glare) * separated
+        + float(weights.glare_l1) * dark
     )
     return LossOutput(
         total=total,
@@ -335,6 +441,7 @@ def composite_loss(
         occ=occupied,
         sparse=sparse,
         velocity=velocity,
+        glare=glare_term,
     )
 
 

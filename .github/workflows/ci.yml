@@ -24,7 +24,7 @@ jobs:
       - name: Install AeroSplat and dev tools
         # --no-deps keeps pip from replacing the CPU torch wheel with a CUDA build.
         run: |
-          pip install numpy pyyaml omegaconf hydra-core pillow pytest ruff matplotlib
+          pip install numpy pyyaml omegaconf hydra-core pillow pytest ruff matplotlib onnx onnxruntime
           pip install -e . --no-deps
 
       - name: Confirm this job did not build a CUDA rasterizer

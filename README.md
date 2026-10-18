@@ -9,9 +9,10 @@ lift and packs `[B, N, 62]`: anchor plus a bounded offset, post-exp scales
 with an anisotropic cap on wires, a unit wxyz quaternion, sigmoid opacity,
 degree-3 SH whose DC matches the pixel, and velocity in m/s. `N` is a fixed
 slot budget. A wire allocates extra slots by clearing a mask, not by changing
-the tensor length. The glare head, the occupancy head, and the loss stack are
-still stubs. A CPU reference splatter renders tests. The CUDA rasterizer is
-imported only when it is installed.
+the tensor length. Phase 5 adds an image-space glare layer, a coarse occupancy
+volume with a sub-voxel wire line, and ONNX export of the network. A CPU
+reference splatter renders tests. The CUDA rasterizer is imported only when
+it is installed.
 
 The flight frame is ENU Z-up, cameras are OpenCV, and extrinsics are
 world-to-camera. AirSim-family simulators (Cosys-AirSim and archived Colosseum)
@@ -35,18 +36,19 @@ scripts/            fixture, capture, cache, sanity
 tests/              CPU tests
 ```
 
-The relight head and the real occupancy head still raise `NotImplementedError`.
 Phase 4 trains through `diff-gaussian-rasterization` when that extension
 imports and CUDA is available. The import is `importlib` inside the call, so
 CPU CI never compiles it. The reference splatter renders the CPU tests.
-`L_occ` is wired to a one-logit placeholder and the Phase 1 cache, with weight 0.
+`L_occ` uses `OccupancyHead` and the Phase 1 cache. The default weight is
+`λ4 = 0.1`. Glare, collision queries, and export are described in
+`docs/PHASE5.md`.
 
 ## Install
 
 ```bash
 pip install torch --index-url https://download.pytorch.org/whl/cpu
 pip install -e ".[dev]" --no-deps
-pip install numpy pyyaml omegaconf hydra-core pillow pytest ruff matplotlib
+pip install numpy pyyaml omegaconf hydra-core pillow pytest ruff matplotlib onnx onnxruntime
 ```
 
 `--no-deps` matters if a CPU torch wheel is already installed: a normal
@@ -110,15 +112,16 @@ Hydra overrides use the same `data=` and `rig=` groups as `configs/`.
 | 2 | Shared ViT, pose tokens, plane-sweep lift, depth pretraining. |
 | 3 | Geometry, appearance, and dynamics heads, wire slots, `[B, N, 62]`. |
 | 4 | Differentiable CUDA rasterizer, photometric, reprojected temporal, and sparsity losses. |
-| 5 | Glare residual, occupancy head, export. |
+| 5 | Glare layer, occupancy and collision, ONNX and TensorRT export. |
 
 Disagreements with the original spec (scale bounds, SH versus flare, occupancy
 BCE, the Stanford set, sub-millisecond inference) are listed in
 `docs/ARCHITECTURE.md`. Andy's loss equations are implemented there.
 `λ1 = 0.8`, `λ2 = 0.2`. `L_sparse` is his ungated volume hinge divided by `N`,
 with `τ_max = 0.008` m³. `L_temp` reprojects `x + v Δt` into the next frame
-instead of comparing pixel slots, which are wrong under ego-motion. `λ4 = 0`
-until the Phase 5 occupancy head exists.
+instead of comparing pixel slots, which are wrong under ego-motion. `λ4 = 0.1`
+now that the occupancy head exists. `λ_glare = 0.1` supervises a known flare
+layer when one is present.
 
 ## Training
 

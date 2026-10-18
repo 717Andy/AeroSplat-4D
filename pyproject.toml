@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "aerosplat"
-version = "0.4.0"
+version = "0.5.0"
 description = "Feedforward 4D Gaussian splatting for Urban Air Mobility"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -30,6 +30,8 @@ dev = [
     "pytest>=8.0",
     "ruff>=0.6",
     "matplotlib>=3.8",
+    "onnx>=1.16",
+    "onnxruntime>=1.18",
 ]
 # Phase 4 binds a CUDA rasterizer (diff-gaussian-rasterization or a maintained
 # alternative such as gsplat). That build is intentionally not an install extra:
@@ -43,6 +45,7 @@ aerosplat-capture = "aerosplat.capture.colosseum:main"
 aerosplat-pretrain = "aerosplat.models.pretrain:main"
 aerosplat-train = "aerosplat.train:main"
 aerosplat-benchmark = "aerosplat.capture.benchmark:main"
+aerosplat-export = "aerosplat.export:main"
 
 [tool.setuptools.packages.find]
 include = ["aerosplat*"]

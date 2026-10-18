@@ -15,6 +15,21 @@ import torch
 from torch import Tensor
 
 
+def _segmentation(value: Tensor | object, height: int, width: int, name: str) -> Tensor:
+    tensor = torch.as_tensor(value)
+    if tensor.ndim == 2 and tuple(tensor.shape) == (height, width):
+        return tensor.to(dtype=torch.long).contiguous()
+    if tensor.ndim == 3 and tuple(tensor.shape) == (3, height, width):
+        if tensor.is_floating_point():
+            tensor = (tensor.clamp(0, 1) * 255.0).round().to(dtype=torch.uint8)
+        else:
+            tensor = tensor.to(dtype=torch.uint8)
+        return tensor.contiguous()
+    raise ValueError(
+        f"{name}: segmentation must be [H, W] labels or [3, H, W] RGB, got {tuple(tensor.shape)}"
+    )
+
+
 def _as_f32(value: Tensor | object, shape: tuple[int, ...], name: str) -> Tensor:
     tensor = torch.as_tensor(value, dtype=torch.float32)
     if tuple(tensor.shape) != shape:
@@ -49,6 +64,12 @@ class CameraFrame:
     query_timestamp: float = 0.0
     sync: str = "nearest"
     frame_index: int = 0
+    # Integer labels ``[H, W]`` or RGB ``[3, H, W]`` uint8. Optional. The
+    # occupancy cache uses it only when wire ids or wire colors are configured.
+    segmentation: Tensor | None = None
+    # Flare-off render paired with ``image`` (the flare-on observation).
+    # Absent means the image is the only photometric target.
+    clean_image: Tensor | None = None
 
     def __post_init__(self) -> None:
         image = torch.as_tensor(self.image, dtype=torch.float32).contiguous()
@@ -78,6 +99,16 @@ class CameraFrame:
                     f"{self.name}: depth shape {tuple(depth.shape)} != image {(height, width)}"
                 )
             self.depth = depth
+        if self.segmentation is not None:
+            self.segmentation = _segmentation(self.segmentation, height, width, self.name)
+        if self.clean_image is not None:
+            clean = torch.as_tensor(self.clean_image, dtype=torch.float32).contiguous()
+            if tuple(clean.shape) != (3, height, width):
+                raise ValueError(
+                    f"{self.name}: clean_image shape {tuple(clean.shape)} "
+                    f"!= image {(3, height, width)}"
+                )
+            self.clean_image = clean
         if self.sync not in {"nearest", "interpolated", "clamped", "exact"}:
             raise ValueError(f"unknown sync state {self.sync!r}")
         if not (self.timestamp == self.timestamp and self.query_timestamp == self.query_timestamp):
@@ -124,6 +155,10 @@ class MultiCameraSample:
     timestamp: float
     cameras: dict[str, CameraFrame] = field(default_factory=dict)
     gt_velocity: Tensor | None = None
+    # WGS84 degrees. Together with a Unix ``timestamp`` they place the sun.
+    # None means the relight head estimates the sun from the image.
+    latitude_deg: float | None = None
+    longitude_deg: float | None = None
 
     def __post_init__(self) -> None:
         if not self.cameras:
@@ -139,6 +174,10 @@ class MultiCameraSample:
             if not torch.isfinite(velocity).all():
                 raise ValueError("gt_velocity contains non-finite values")
             self.gt_velocity = velocity
+        if self.latitude_deg is not None and not -90.0 <= float(self.latitude_deg) <= 90.0:
+            raise ValueError(f"latitude_deg must be in [-90, 90], got {self.latitude_deg}")
+        if self.longitude_deg is not None and not -180.0 <= float(self.longitude_deg) <= 180.0:
+            raise ValueError(f"longitude_deg must be in [-180, 180], got {self.longitude_deg}")
 
     def __len__(self) -> int:
         return len(self.cameras)

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import torch.nn.functional as F
 
 from aerosplat.geometry.camera import scale_intrinsics
@@ -39,19 +41,22 @@ def resize_camera_frame(frame: CameraFrame, height: int, width: int) -> CameraFr
         (frame.height, frame.width),
         (height, width),
     )
-    return CameraFrame(
-        name=frame.name,
+    segmentation = _resize_segmentation(frame.segmentation, height, width)
+    clean = None
+    if frame.clean_image is not None:
+        clean = F.interpolate(
+            frame.clean_image.unsqueeze(0),
+            size=(height, width),
+            mode="bilinear",
+            align_corners=False,
+        ).squeeze(0)
+    return replace(
+        frame,
         image=image,
         K=K,
-        R=frame.R,
-        t=frame.t,
-        timestamp=frame.timestamp,
         depth=depth,
-        R_query=frame.R_query,
-        t_query=frame.t_query,
-        query_timestamp=frame.query_timestamp,
-        sync=frame.sync,
-        frame_index=frame.frame_index,
+        segmentation=segmentation,
+        clean_image=clean,
     )
 
 
@@ -66,10 +71,22 @@ def resize_sample(
             cameras[name] = resize_camera_frame(frame, height, width)
         else:
             cameras[name] = frame
-    return MultiCameraSample(
-        scene_id=sample.scene_id,
-        sample_index=sample.sample_index,
-        timestamp=sample.timestamp,
-        cameras=cameras,
-        gt_velocity=sample.gt_velocity,
+    return replace(sample, cameras=cameras)
+
+
+def _resize_segmentation(segmentation, height: int, width: int):
+    if segmentation is None:
+        return None
+    if segmentation.ndim == 2:
+        resized = F.interpolate(
+            segmentation.float().unsqueeze(0).unsqueeze(0),
+            size=(height, width),
+            mode="nearest",
+        )
+        return resized.squeeze(0).squeeze(0).to(dtype=segmentation.dtype)
+    resized = F.interpolate(
+        segmentation.float().unsqueeze(0),
+        size=(height, width),
+        mode="nearest",
     )
+    return resized.squeeze(0).to(dtype=segmentation.dtype)

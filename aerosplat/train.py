@@ -29,29 +29,65 @@ from torch.utils.data.distributed import DistributedSampler
 
 from aerosplat.data.collate import collate_samples
 from aerosplat.data.dataset import build_dataset
+from aerosplat.data.flare import FlareAugmenter, FlareLibrary, paired_glare_target
+from aerosplat.geometry.sun import resolve_sun_world
+from aerosplat.models.collision import wire_direction_smoothness, wire_point_loss
 from aerosplat.models.factory import build_model
-from aerosplat.models.heads import PlaceholderOccupancyHead
 from aerosplat.models.losses import (
     LossOutput,
     LossWeights,
     composite_loss,
     occupancy_target_from_grid,
+    wire_target_from_grid,
 )
+from aerosplat.models.occupancy_head import OccupancyHead, OccupancyVolume
 from aerosplat.models.pretrain import prepare_rig
 from aerosplat.models.rasterizer import GaussianRasterizer
+from aerosplat.models.relight import RelightHead, composite_glare, glare_for_cameras
 from aerosplat.schema import MultiCameraSample
 
 
 class SplatTrainer(nn.Module):
-    """Splatter plus the occupancy placeholder. Phase 5 swaps the placeholder."""
+    """Splatter, glare head, and occupancy head. The rasterizer stays outside.
 
-    def __init__(self, splatter: nn.Module, occ_head: PlaceholderOccupancyHead) -> None:
+    One forward runs the lifter and the Gaussian heads, then the two Phase 5
+    heads. Rendering is a separate call so the ONNX export can stop at the
+    tensors and leave the CUDA rasterizer on its own path.
+    """
+
+    def __init__(self, splatter: nn.Module, relight: RelightHead, occupancy: OccupancyHead) -> None:
         super().__init__()
         self.splatter = splatter
-        self.occ_head = occ_head
+        self.relight = relight
+        self.occupancy = occupancy
 
-    def forward(self, images: dict[str, Tensor], cameras: dict[str, dict[str, Tensor]]):
-        return self.splatter(images, cameras, match="hybrid")
+    def forward(
+        self,
+        images: dict[str, Tensor],
+        cameras: dict[str, dict[str, Tensor]],
+        sun_world: Tensor,
+        occ_origin: Tensor | None = None,
+        occ_voxel: float | Tensor | None = None,
+        occ_dims: tuple[int, int, int] | None = None,
+    ):
+        lifted = self.splatter.lifter(images, cameras, match="hybrid")
+        cloud = self.splatter.predictor(lifted, images, cameras)
+        feature_maps = {name: view.features.float() for name, view in lifted.cameras.items()}
+        image_hw = {
+            name: (int(image.shape[-2]), int(image.shape[-1])) for name, image in images.items()
+        }
+        glare = glare_for_cameras(
+            self.relight,
+            feature_maps,
+            cloud,
+            cameras,
+            sun_world.float(),
+            image_hw,
+        )
+        volume = None
+        if occ_origin is not None and occ_voxel is not None and occ_dims is not None:
+            volume = self.occupancy.forward_cloud(cloud, occ_origin, occ_voxel, occ_dims)
+        return cloud, glare, volume
 
 
 class FramePairDataset(Dataset):
@@ -286,7 +322,11 @@ def run_training(cfg, dataset=None) -> list[dict[str, float]]:
     )
 
     splatter = build_model(cfg)
-    trainer = SplatTrainer(splatter, PlaceholderOccupancyHead())
+    trainer = SplatTrainer(
+        splatter,
+        RelightHead(feature_dim=int(cfg.model.embed_dim)),
+        OccupancyHead(),
+    )
     _set_checkpointing(trainer, bool(cfg.train.gradient_checkpointing))
     trainer.to(device)
     if distributed:
@@ -302,6 +342,8 @@ def run_training(cfg, dataset=None) -> list[dict[str, float]]:
         occ=float(cfg.train.lambda_occ),
         sparse=float(cfg.train.lambda_sparse),
         velocity=float(cfg.train.lambda_velocity),
+        glare=float(getattr(cfg.train, "lambda_glare", 0.0)),
+        glare_l1=float(getattr(cfg.train, "lambda_glare_l1", 0.0)),
     )
     amp = bool(cfg.train.amp) and device.type == "cuda"
     if bool(cfg.train.amp) and not amp and rank == 0:
@@ -330,6 +372,7 @@ def run_training(cfg, dataset=None) -> list[dict[str, float]]:
         from aerosplat.data.cache import CacheConfig, GroundTruthCache
 
         cache = GroundTruthCache(CacheConfig.from_hydra(cfg))
+    augmenter = _flare_augmenter(cfg)
 
     history: list[dict[str, float]] = []
     steps = int(cfg.train.steps)
@@ -366,6 +409,7 @@ def run_training(cfg, dataset=None) -> list[dict[str, float]]:
                         amp,
                         cache,
                         keep_images,
+                        augmenter,
                     )
                     if not torch.isfinite(result.total):
                         raise RuntimeError(f"non-finite loss at step {step}: {result.scalars()}")
@@ -398,7 +442,7 @@ def run_training(cfg, dataset=None) -> list[dict[str, float]]:
                     f"step {step} total {row['total']:.4f} photo {row['photo']:.4f} "
                     f"ssim {row['ssim']:.4f} temp {row['temp']:.4f} "
                     f"occ {row['occ']:.4f} sparse {row['sparse']:.4f} "
-                    f"velocity {row['velocity']:.4f}"
+                    f"velocity {row['velocity']:.4f} glare {row['glare']:.4f}"
                 )
         if rank == 0 and bool(cfg.train.save_last):
             save_checkpoint(
@@ -434,40 +478,68 @@ def main(argv: list[str] | None = None) -> None:
         print("final", " ".join(f"{key}={value:.4f}" for key, value in last.items()))
 
 
-def _step(model, rasterizer, batch, weights: LossWeights, cfg, device, amp, cache, keep_images):
+def _step(
+    model,
+    rasterizer,
+    batch,
+    weights: LossWeights,
+    cfg,
+    device,
+    amp,
+    cache,
+    keep_images,
+    augmenter: FlareAugmenter | None,
+):
     images, cameras = _move_views(batch["images"], batch["cameras"], device)
+    glare_target, glare_mask = _known_glare(batch, images, device)
+    if augmenter is not None:
+        images, extra_target, extra_mask = _apply_flares(augmenter, images)
+        glare_target.update(extra_target)
+        glare_mask.update(extra_mask)
+    sun_world = _batch_sun(batch, images, cameras, device)
+    occ_origin = occ_voxel = occ_dims = None
+    occ_target = occ_known = wire_target = wire_points = None
+    if cache is not None:
+        occ_origin, occ_voxel, occ_dims, occ_target, occ_known, wire_target, wire_points = (
+            _occupancy_batch(cache, batch["raw"], device)
+        )
     autocast = (
         torch.autocast(device_type="cuda", dtype=torch.float16, enabled=True)
         if amp
         else nullcontext()
     )
     with autocast:
-        cloud = model(images, cameras)
+        cloud, glare, volume = model(
+            images,
+            cameras,
+            sun_world,
+            occ_origin,
+            occ_voxel,
+            occ_dims,
+        )
     # The rasterizer and the losses stay fp32. AMP covers the ViT only.
     cloud.packed = cloud.packed.float()
-    rendered = rasterizer(cloud.packed, cameras, valid=cloud.valid)
+    cloud.wire_prob = cloud.wire_prob.float()
+    glare = {name: layer.float() for name, layer in glare.items()}
+    clean = rasterizer(cloud.packed, cameras, valid=cloud.valid)
+    rendered = {name: composite_glare(clean[name], glare[name]) for name in clean}
     cloud_next = None
     cameras_next = None
     dt = None
     if batch["images_next"] is not None and float(weights.temp) != 0.0:
         images_next, cameras_next = _move_views(batch["images_next"], batch["cameras_next"], device)
+        sun_next = _sun_from_views(images_next, cameras_next)
         with autocast:
-            cloud_next = model(images_next, cameras_next)
+            cloud_next, _, _ = model(images_next, cameras_next, sun_next)
         cloud_next.packed = cloud_next.packed.float()
+        cloud_next.wire_prob = cloud_next.wire_prob.float()
         dt = batch["dt"].to(device)
-    occ_logits = occ_target = occ_known = None
-    if cache is not None:
-        targets = []
-        knowns = []
-        for sample in batch["raw"]:
-            grid = cache.get(sample)
-            target, known = occupancy_target_from_grid(grid)
-            targets.append(target)
-            knowns.append(known)
-        occ_target = torch.stack(targets, dim=0).to(device)
-        occ_known = torch.stack(knowns, dim=0).to(device)
-        module = model.module if isinstance(model, DistributedDataParallel) else model
-        occ_logits = module.occ_head(occ_target.shape[0], tuple(occ_target.shape[-3:]))
+    occ_logits = None
+    wire_logits = None
+    if volume is not None:
+        volume = _float_volume(volume)
+        occ_logits = volume.occupancy_logits
+        wire_logits = volume.wire_logits
     result = composite_loss(
         rendered,
         images,
@@ -479,6 +551,13 @@ def _step(model, rasterizer, batch, weights: LossWeights, cfg, device, amp, cach
         occ_target=occ_target,
         occ_known=occ_known,
         gt_velocity=None if batch["gt_velocity"] is None else batch["gt_velocity"].to(device),
+        glare=glare,
+        glare_target=glare_target or None,
+        glare_mask=glare_mask or None,
+        wire_logits=wire_logits,
+        wire_target=wire_target,
+        wire_pos_weight=float(getattr(cfg.train, "occ_wire_pos_weight", 8.0)),
+        wire_focal_gamma=float(getattr(cfg.train, "occ_wire_focal_gamma", 2.0)),
         weights=weights,
         tau_max=float(cfg.train.tau_max),
         ssim_window=int(cfg.train.ssim_window),
@@ -489,6 +568,26 @@ def _step(model, rasterizer, batch, weights: LossWeights, cfg, device, amp, cach
         temp_depth_rel=float(cfg.train.temp_depth_rel),
         temp_max_search=float(cfg.train.temp_max_search),
     )
+    smooth_weight = float(getattr(cfg.train, "occ_smooth_weight", 0.0))
+    line_weight = float(getattr(cfg.train, "occ_line_weight", 0.0))
+    if volume is not None and float(weights.occ) != 0.0 and (smooth_weight > 0 or line_weight > 0):
+        extra = result.occ * 0.0
+        if smooth_weight > 0:
+            extra = extra + smooth_weight * wire_direction_smoothness(
+                volume.wire_logits, volume.wire_direction
+            )
+        if line_weight > 0 and wire_points is not None and wire_points.numel() > 0:
+            extra = extra + line_weight * wire_point_loss(volume, wire_points)
+        result = LossOutput(
+            total=result.total + float(weights.occ) * extra,
+            photo=result.photo,
+            ssim=result.ssim,
+            temp=result.temp,
+            occ=result.occ + extra,
+            sparse=result.sparse,
+            velocity=result.velocity,
+            glare=result.glare,
+        )
     logged_render = logged_target = None
     if keep_images:
         logged_render = {name: tensor.detach() for name, tensor in rendered.items()}
@@ -516,6 +615,11 @@ def _collate_pairs(batch: list) -> dict:
     gt_velocity = None
     if all(velocity is not None for velocity in velocities):
         gt_velocity = torch.stack(velocities, dim=0)
+    clean = {
+        name: camera["clean_image"]
+        for name, camera in collated["cameras"].items()
+        if "clean_image" in camera
+    }
     return {
         "images": images,
         "cameras": cameras,
@@ -523,6 +627,7 @@ def _collate_pairs(batch: list) -> dict:
         "cameras_next": cameras_next,
         "dt": dt,
         "gt_velocity": gt_velocity,
+        "clean_images": clean or None,
         "raw": [item[2] for item in batch],
     }
 
@@ -612,6 +717,122 @@ def _select_cameras(sample: MultiCameraSample, names: list[str] | None) -> Multi
         timestamp=sample.timestamp,
         cameras=cameras,
         gt_velocity=sample.gt_velocity,
+        latitude_deg=sample.latitude_deg,
+        longitude_deg=sample.longitude_deg,
+    )
+
+
+def _flare_augmenter(cfg) -> FlareAugmenter | None:
+    root = getattr(cfg.train, "flare_root", None)
+    if root in {None, "", "null"}:
+        return None
+    library = FlareLibrary(Path(str(root)))
+    return FlareAugmenter(
+        library,
+        probability=float(getattr(cfg.train, "flare_prob", 0.5)),
+    )
+
+
+def _known_glare(batch, images, device):
+    """Paired flare-off frames, resized with the rig, as a glare target."""
+    clean = batch.get("clean_images")
+    target: dict[str, Tensor] = {}
+    mask: dict[str, Tensor] = {}
+    if not clean:
+        return target, mask
+    for name, observed in images.items():
+        if name not in clean:
+            continue
+        paired = clean[name].to(device)
+        if paired.shape != observed.shape:
+            continue
+        glare, glare_mask = paired_glare_target(observed, paired)
+        target[name] = glare
+        mask[name] = glare_mask
+    return target, mask
+
+
+def _apply_flares(augmenter: FlareAugmenter, images: dict[str, Tensor]):
+    target: dict[str, Tensor] = {}
+    mask: dict[str, Tensor] = {}
+    updated = dict(images)
+    for name, image in images.items():
+        composite = augmenter.maybe(image)
+        if composite is None:
+            continue
+        updated[name] = composite.image
+        target[name] = composite.glare
+        mask[name] = composite.mask
+    return updated, target, mask
+
+
+def _batch_sun(batch, images, cameras, device) -> Tensor:
+    reference = next(iter(images))
+    suns = []
+    raw = batch["raw"]
+    for index in range(images[reference].shape[0]):
+        sample = raw[index]
+        sun, _source = resolve_sun_world(
+            float(sample.timestamp),
+            sample.latitude_deg,
+            sample.longitude_deg,
+            images[reference][index],
+            cameras[reference]["K"][index],
+            cameras[reference]["R"][index],
+        )
+        suns.append(sun)
+    return torch.stack(suns, dim=0).to(device)
+
+
+def _sun_from_views(images, cameras) -> Tensor:
+    reference = next(iter(images))
+    suns = []
+    for index in range(images[reference].shape[0]):
+        sun, _source = resolve_sun_world(
+            0.0,
+            None,
+            None,
+            images[reference][index],
+            cameras[reference]["K"][index],
+            cameras[reference]["R"][index],
+        )
+        suns.append(sun)
+    return torch.stack(suns, dim=0)
+
+
+def _occupancy_batch(cache, samples, device):
+    grids = [cache.get(sample) for sample in samples]
+    dims = grids[0].dims
+    for grid in grids[1:]:
+        if grid.dims != dims:
+            raise ValueError(f"occupancy grids in one batch differ: {grid.dims} vs {dims}")
+    origin = torch.tensor(
+        np.stack([grid.origin for grid in grids]),
+        dtype=torch.float32,
+        device=device,
+    )
+    voxel = float(grids[0].voxel_size)
+    target = torch.stack([occupancy_target_from_grid(grid)[0] for grid in grids], dim=0).to(device)
+    known = torch.stack([occupancy_target_from_grid(grid)[1] for grid in grids], dim=0).to(device)
+    wire = torch.stack([wire_target_from_grid(grid) for grid in grids], dim=0).to(device)
+    points = [torch.as_tensor(grid.wire_points, dtype=torch.float32) for grid in grids]
+    # The line loss uses the first sample's points. Batches larger than 1
+    # still supervise every sample's voxel logits; the point loss is the
+    # sub-voxel term and is applied per sample below when the batch is 1.
+    # For a larger batch, concatenate is the wrong frame. Keep the first
+    # and rely on voxel BCE for the rest. Documented in docs/PHASE5.md.
+    wire_points = points[0].to(device) if len(points) == 1 else None
+    return origin, voxel, dims, target, known, wire, wire_points
+
+
+def _float_volume(volume: OccupancyVolume) -> OccupancyVolume:
+    return OccupancyVolume(
+        occupancy_logits=volume.occupancy_logits.float(),
+        wire_logits=volume.wire_logits.float(),
+        wire_direction=volume.wire_direction.float(),
+        wire_offset=volume.wire_offset.float(),
+        origin=volume.origin.float(),
+        voxel_size=volume.voxel_size.float(),
     )
 
 

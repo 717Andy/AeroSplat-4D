@@ -20,11 +20,17 @@ class FrameRecord:
     R: np.ndarray
     t: np.ndarray
     depth_kind: str = "planar_z"
+    segmentation_path: Path | None = None
+    clean_image_path: Path | None = None
 
     def __post_init__(self) -> None:
         self.image_path = Path(self.image_path)
         if self.depth_path is not None:
             self.depth_path = Path(self.depth_path)
+        if self.segmentation_path is not None:
+            self.segmentation_path = Path(self.segmentation_path)
+        if self.clean_image_path is not None:
+            self.clean_image_path = Path(self.clean_image_path)
         self.K = np.asarray(self.K, dtype=np.float64).reshape(3, 3)
         self.R = np.asarray(self.R, dtype=np.float64).reshape(3, 3)
         self.t = np.asarray(self.t, dtype=np.float64).reshape(3)

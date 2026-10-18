@@ -25,4 +25,4 @@ note: >
   set model.img_size=112 (divisible by patch 14). Do not switch to vit_base
   on this card. num_workers stays 0: Windows spawn plus Hydra is not worth it
   when the ViT is the bottleneck. Install the CUDA rasterizer first
-  (docs/RASTERIZER.md). λ_occ stays 0.
+  (docs/RASTERIZER.md). Occupancy uses the phase4 λ_occ on the local cache.

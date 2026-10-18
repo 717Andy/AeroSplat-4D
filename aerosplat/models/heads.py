@@ -6,8 +6,10 @@ offset, anisotropic scale cap, unit quaternion, sigmoid opacity, SH DC from
 the image, velocity in m/s) and then packed into ``[B, N, 62]``.
 
 Relighting and occupancy stay side outputs. They are not extra channels in
-the 62. Relight consumes the degree-3 SH coefficients. Occupancy consumes the
-lifted feature volume and is supervised by the cached voxel grid.
+the 62. Relight consumes image features, the sun direction, and the degree-3
+SH field, and it emits an additive glare layer. Occupancy consumes the
+Gaussian cloud and is supervised by the cached voxel grid, with a separate
+wire channel for cables that are thinner than a voxel.
 """
 
 from __future__ import annotations
@@ -18,13 +20,27 @@ import torch
 import torch.nn as nn
 from torch import Tensor
 
+from aerosplat.models.occupancy_head import OccupancyHead
+from aerosplat.models.relight import RelightHead
+
+__all__ = [
+    "HEAD_OUTPUTS",
+    "AppearanceHead",
+    "DynamicsHead",
+    "GeometryHead",
+    "OccupancyHead",
+    "PlaceholderOccupancyHead",
+    "RelightHead",
+]
+
 # Name -> output fields. Geometry/appearance/dynamics pack into GaussianLayout.
+# Relight and occupancy stay beside the 62.
 HEAD_OUTPUTS: dict[str, tuple[str, ...]] = {
     "geometry": ("xyz", "scale", "quat"),
     "appearance": ("opacity", "sh"),
     "dynamics": ("velocity",),
     "relight": ("glare_rgb",),
-    "occupancy": ("voxel_logits",),
+    "occupancy": ("voxel_logits", "wire_logits", "wire_direction", "wire_offset"),
 }
 
 
@@ -114,49 +130,11 @@ class DynamicsHead(nn.Module):
         return {"velocity": self.proj(features)}
 
 
-class _UnimplementedHead(nn.Module):
-    phase = "later"
-    head_name = "head"
-
-    def forward(self, features):
-        del features
-        raise NotImplementedError(
-            f"{self.phase}: {self.head_name} head is not implemented. "
-            f"Planned outputs: {', '.join(HEAD_OUTPUTS[self.head_name])}."
-        )
-
-
-class RelightHead(_UnimplementedHead):
-    """Screen-space glare residual predicted from SH and a sun direction.
-
-    Degree-3 SH can represent low-frequency view-dependent color. It does not
-    by itself isolate a sharp lens flare. This head is the place that residual
-    has to live; packing more SH bands into the 62 would change the rasterizer
-    contract and still would not be a flare model.
-    """
-
-    phase = "Phase 5"
-    head_name = "relight"
-
-
-class OccupancyHead(_UnimplementedHead):
-    """Local voxel logits. Supervise with the cached grid, masking unknown cells.
-
-    Phase 5 reads the lifted features and predicts a logit per voxel. Until
-    that head exists, :class:`PlaceholderOccupancyHead` is what ``L_occ``
-    trains against so the loss and the cache wiring can be tested.
-    """
-
-    phase = "Phase 5"
-    head_name = "occupancy"
-
-
 class PlaceholderOccupancyHead(nn.Module):
     """One shared logit, broadcast over the Phase 1 cache grid.
 
-    This is not the occupancy head. It does not read the ViT. It exists so
-    ``L_occ`` has a tensor to differentiate and a parameter to checkpoint
-    before Phase 5 replaces it. The training weight defaults to 0.
+    Kept so the Phase 4 loss test still has a tensor that does not read the
+    cloud. Training uses :class:`OccupancyHead`.
     """
 
     def __init__(self) -> None:

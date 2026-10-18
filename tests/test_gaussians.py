@@ -91,7 +91,7 @@ def test_pack_rejects_logits_and_bad_shapes():
         pack_gaussians(xyz[0], scale[0], quat[0], opacity[0], sh[0], velocity[0])
 
 
-def test_phase3_heads_run_phase5_stays_stubbed_and_cuda_stays_optional():
+def test_heads_run_and_the_cuda_rasterizer_stays_optional():
     features = torch.zeros(2, 3, 8)
     geometry = GeometryHead(8)(features)
     assert geometry["offset_raw"].shape == (2, 3, 3)
@@ -101,9 +101,28 @@ def test_phase3_heads_run_phase5_stays_stubbed_and_cuda_stays_optional():
     assert appearance["opacity_logit"].shape == (2, 3, 1)
     assert appearance["sh_residual"].shape == (2, 3, 16, 3)
     assert DynamicsHead(8)(features)["velocity"].shape == (2, 3, 3)
-    for head in (RelightHead(), OccupancyHead()):
-        with pytest.raises(NotImplementedError):
-            head(features)
+    glare = RelightHead(4, hidden=4)(
+        torch.zeros(2, 4, 8, 8),
+        torch.zeros(2, 16, 3),
+        torch.tensor([[0.0, 0.0, 1.0], [0.0, 1.0, 0.0]]),
+        (8, 8),
+    )
+    assert glare.shape == (2, 3, 8, 8)
+    volume = OccupancyHead(hidden=4)(
+        torch.zeros(2, 3, 3),
+        torch.ones(2, 3),
+        torch.zeros(2, 3),
+        torch.ones(2, 3, dtype=torch.bool),
+        torch.zeros(3),
+        0.5,
+        (4, 4, 4),
+        torch.full((2, 3, 3), 0.1),
+        torch.zeros(2, 3, 3),
+    )
+    assert volume.occupancy_logits.shape == (2, 4, 4, 4)
+    assert volume.wire_logits.shape == (2, 4, 4, 4)
+    assert volume.wire_direction.shape == (2, 3, 4, 4, 4)
+    assert volume.wire_offset.shape == (2, 3, 4, 4, 4)
     packed = pack_gaussians(*_raw())
     raster = GaussianRasterizer(backend="diff_gaussian")
     camera = {
@@ -121,6 +140,13 @@ def test_phase3_heads_run_phase5_stays_stubbed_and_cuda_stays_optional():
     packed_fields = HEAD_OUTPUTS["geometry"] + HEAD_OUTPUTS["appearance"] + HEAD_OUTPUTS["dynamics"]
     assert "voxel_logits" not in packed_fields
     assert "glare_rgb" not in packed_fields
+    assert HEAD_OUTPUTS["relight"] == ("glare_rgb",)
+    assert HEAD_OUTPUTS["occupancy"] == (
+        "voxel_logits",
+        "wire_logits",
+        "wire_direction",
+        "wire_offset",
+    )
     source = (Path(__file__).parents[1] / "aerosplat" / "models" / "rasterizer.py").read_text()
     assert "import diff_gaussian_rasterization" not in source
     assert "import gsplat" not in source
