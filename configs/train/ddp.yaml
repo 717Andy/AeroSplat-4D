@@ -1,0 +1,26 @@
+# @package train
+defaults:
+  - phase4
+  - _self_
+
+# One process per GPU. Launch with torchrun, not python. NCCL, batch 1 on
+# each rank, so the global batch is the GPU count. The rasterizer is the
+# stock CUDA extension; the CPU reference path is not used.
+amp: true
+device: cuda
+backend: diff_gaussian
+distributed: true
+gradient_checkpointing: true
+batch_size: 1
+grad_accum_steps: 1
+steps: 100000
+lr: 1.0e-4
+log_every: 50
+ckpt_every: 1000
+log_dir: outputs/train_ddp
+num_workers: 2
+note: >
+  torchrun --nproc_per_node=N scripts/train.py --config-name experiment/ddp
+  Rank 0 writes metrics, image grids, and checkpoints. Each rank shuffles
+  with the same seed plus DistributedSampler.set_epoch. Find-unused is on
+  because λ_occ is 0 and the placeholder head is not in the graph.

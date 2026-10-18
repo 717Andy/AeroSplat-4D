@@ -71,4 +71,5 @@ def resize_sample(
         sample_index=sample.sample_index,
         timestamp=sample.timestamp,
         cameras=cameras,
+        gt_velocity=sample.gt_velocity,
     )

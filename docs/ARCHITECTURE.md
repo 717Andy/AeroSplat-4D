@@ -5,9 +5,10 @@ rig predicts a 4D Gaussian cloud. Phase 1 is the data contract. Phase 2 is the
 shared ViT and the plane-sweep lift that turns it into per-pixel features and
 flight-frame anchors. Phase 3 is the geometry, appearance, and dynamics heads,
 the fixed-budget wire allocator, and the slot layout the temporal loss indexes.
-The CUDA rasterizer binding is guarded. A pure-PyTorch reference splatter
-covers CPU tests. The losses, the glare head, and the occupancy head are still
-stubs.
+The CUDA rasterizer binding is the Phase 4 training path. A pure-PyTorch
+reference splatter covers CPU tests. The glare head and the real occupancy
+head are still Phase 5. `L_occ` already runs against a one-logit placeholder
+and the Phase 1 cache, with weight 0.
 
 ```
 N camera frames (image, K, R|t, time, optional depth)
@@ -90,8 +91,9 @@ rig resolution: `N = sum over cameras of (lift_grid_h * lift_grid_w * slots_per_
 It does not change when a wire appears or disappears. A batch is only valid
 when every sample shares that layout. `GaussianCloud.valid` (`[B, N]` bool) and
 `GaussianCloud.wire_prob` (`[B, N]` in `[0, 1]`) sit beside the 62. They are
-not extra channels. `wire_prob` is what Phase 4 can multiply into `L_sparse`
-and what Phase 5 can read for thin structure.
+not extra channels. `wire_prob` is what Phase 5 can read for thin structure. Phase 4 does **not**
+multiply it into `L_sparse`. Andy's sum is ungated. The probability still
+drives the Phase 3 anisotropic cap.
 
 | Slice | Count | Field |
 | --- | --- | --- |
@@ -275,15 +277,17 @@ re-rank. `i` is the slot `(camera name, lift-cell row, lift-cell col, subslot)`,
 packed in that order. Subslot 0 is the base Gaussian on the anchor. Subslots
 `1..K` are the extra candidates. `temporal_residual(cloud_t, cloud_tp1, dt)`
 returns `x_t + v_t Δt - x_{t+1}` and a weight `valid_t * valid_{t+1}`. It
-raises if the camera order or the grid changed. The `x + v Δt` term is the
-loss target, not a second matching stage.
+raises if the camera order or the grid changed. That difference is the
+pixel-slot reading of Andy's index. The training loss does not call it.
 
 This is pixel correspondence, not a tracked world point. A moving camera looks
 at a different surface point through the same pixel next frame, so a static
 world still has a nonzero residual when velocity is zero. A tracker that
-gathered Gaussians into a new order would change `N` and break export. Phase 4
-should reduce `L_temp` with the weight this helper returns. Whether ego-motion
-should be subtracted before that residual is an open question, below.
+gathered Gaussians into a new order would change `N` and break export.
+
+Phase 4 does not train that residual. `temporal_residual` stays as the
+pixel-slot quantity. The loss reprojects `x_t + v_t Δt` into the next frame.
+See Losses below.
 
 ### Wires: density and the scale cap
 
@@ -354,34 +358,66 @@ Gaussians on CPU. Do not train with it, and do not point it at 1080p.
 `DiffGaussianRasterizationAdapter` builds the transposed world-to-camera and
 projection matrices the Inria bindings expect (`viewmatrix = w2c.T`, camera
 center `-R^T t`) and calls `GaussianRasterizer` with post-exp scales,
-post-sigmoid opacity, wxyz quaternions, and `[N, 16, 3]` SH. That package's
-focal length comes from `tan(fov/2)` and the image size, so the principal
-point is the image center. The reference path uses `cx, cy`. They match on a
-centered camera. Phase 4 should check the first CUDA frame against the
-reference before trusting an off-center `K`.
+post-sigmoid opacity, wxyz quaternions, and `[N, 16, 3]` SH. Velocity is
+stripped. The call is fp32 with autocast off.
 
-### Open questions for Phase 4 and Phase 5
+The stock kernel has no `cx, cy`. It maps NDC with
+`((ndc + 1) * size - 1) / 2` and recomputes focal length as
+`size / (2 * tanfov)`. Phase 4 does not fork the extension. The projection
+matrix is built so that formula equals the OpenCV pixel `f * x/z + c`, and
+`tanfov = (size / 2) / f` so the kernel's focal length is `fx` / `fy`. The
+covariance Jacobian does not use the principal point, so it stays correct.
+`kernel_pixels` is the CPU check of that NDC path. A CUDA render is compared
+to the reference splatter on a tiny scene when the extension is installed;
+that test skips in CI. The kernel's screen-space clamp (`1.3 * tanfov` about
+the optical axis) is still symmetric. A principal point far from the image
+center can clip the Jacobian there. `prepare_rig` pads the bottom and right
+without changing `K`, which is a small offset and is why the shift exists.
+Install steps are in `docs/RASTERIZER.md`.
 
-1. Should `L_sparse` follow Andy's ungated sum, or the spec prose and multiply
-   by `wire_prob`? Applying `τ_max` to every Gaussian also penalizes a
-   building-sized splat.
-2. `τ_max` is unset. The cap's volume at `wire_prob = 1` is
-   `wire_transverse_max_m^2 * wire_long_max_m` (defaults `0.03^2 * 1 = 9e-4` m³).
-   A loss threshold equal to that cap is zero wherever the cap already binds.
-   A slightly smaller `τ_max` still has gradient inside the feasible set.
-3. Pixel slots make `i` stable and `N` static. They are not object tracks.
-   Under ego-motion, `x_i^(t+1)` is a different surface point. Subtracting the
-   camera motion, or supervising velocity as zero on static scenes another
-   way, is not decided.
-4. `L_temp` on a slot that is invalid at one of the two times: the helper's
-   weight is the product of the two masks. A wire that appears at `t+1` then
-   contributes nothing. That may or may not be what the sum over `N_splats`
-   should do.
-5. `highres_images` must be the same frustum as the network image, only finer.
+### Decisions Phase 4 closed, and what is still open
+
+Closed:
+
+1. `L_sparse` is Andy's ungated sum. `wire_prob` does not multiply it. The
+   Phase 3 anisotropic cap stays as a hard constraint on wires. The sum is
+   divided by the static slot count `N` so `λ5` does not grow when the rig
+   adds cameras. Invalid slots are packed at opacity 0, so they add nothing
+   and still sit in the denominator.
+2. `τ_max` defaults to `0.008` m³, the volume of the `0.2` m base-scale cube.
+   The hinge is closed at initialization and opens when an opaque Gaussian
+   grows past that. It is config (`train.tau_max`).
+3. `L_temp` uses reprojection, not the pixel slot. `p = x_t + v_t Δt` is
+   projected into the `t+1` cameras. The comparison point is a bilinear sample
+   of the `t+1` base-slot point map, or the nearest valid slot when that
+   neighborhood is empty. The owning camera wins when it still sees `p`.
+   Out-of-view and one-sided occlusion (a closer surface in front of `p`)
+   drop the splat. Invalid at either time drops it. The mean is over the
+   survivors, and the distance is squared L2.
+4. `λ1 = 0.8`, `λ2 = 0.2`. `L_photo` is the mean absolute error of every
+   scalar, then the unweighted mean over cameras, so a small downward camera
+   weighs the same as the nose and the value stays in `[0, 1]`.
+5. `L_occ` is mean BCE over known voxels (unknown masked). `pos_weight` and a
+   focal gamma are config. The sum Andy wrote is `occ_reduction: sum`. The
+   head is a placeholder (one logit broadcast over the cache). `λ4 = 0`
+   until Phase 5. The real `OccupancyHead` still raises.
+6. Logged actor velocity is an extra term, not one of the five. Weight 0
+   unless `gt_velocity` is on the sample. `velocity_from_positions` turns two
+   Cosys/Colosseum actor origins into m/s.
+
+Still open:
+
+1. `highres_images` must be the same frustum as the network image, only finer.
    A sliding crop with its own `K` is not implemented.
-6. The base slot stays valid when the plane sweep had no overlap
-   (`anchor_valid` false). Phase 4 may want to drop those from the photometric
-   term.
+2. The base slot stays valid when the plane sweep had no overlap
+   (`anchor_valid` false). Those splats are still rendered.
+3. Which Gaussian belongs to which logged actor. The optional velocity term
+   broadcasts one rigid vector onto every valid slot. Segmentation is not wired.
+4. A surface that jumps toward the camera between frames looks like the
+   one-sided occlusion test (`sampled depth` much smaller than `p`). Raise
+   `train.temp_depth_abs` / `temp_depth_rel` if fast approaching objects get
+   dropped. The nearest-slot fallback does not pass a gradient through the
+   index.
 
 ### Relighting
 
@@ -421,29 +457,36 @@ supervision is an open Phase 5 problem: smaller local crop, a 2D thin-structure
 channel, or a different primitive. The default 0.5 m voxels will not represent a
 cable. They exist so the cache API and the tests are real.
 
-## Losses (not implemented; Phase 4)
+## Losses (Phase 4)
 
-Andy's equations (2026-10-16) are the formulation Phase 4 implements. The PDF
-embedded them as images; the text form is authoritative. Coefficients and
-`τ_max` are still unset. Phase 3 does not evaluate these. It produces the
-packed cloud, the slot index, and `wire_prob`.
+Andy's equations (2026-10-16) are the formulation. The PDF embedded them as
+images; `loss_equations.md` is the text. The implemented forms, and where they
+differ from the written sum, are below. Code is `aerosplat.models.losses` and
+`aerosplat.models.temporal`.
 
 ```
 L_total = λ1 L_photo + λ2 L_ssim + λ3 L_temp + λ4 L_occ + λ5 L_sparse
-L_photo = (1 / N_cam) sum_c || Ihat_c - I_c ||_1
-L_ssim  = 1 - (1 / N_cam) sum_c SSIM(Ihat_c, I_c)
-L_temp  = (1 / N_splats) sum_i || (x_i^(t) + v_i^(t) Δt) - x_i^(t+1) ||_2^2
-L_occ   = - sum_{v in V} [ y_v log yhat_v + (1 - y_v) log(1 - yhat_v) ]
-L_sparse = sum_i α_i * max(0, s_x,i * s_y,i * s_z,i - τ_max)
+
+L_photo  = (1 / N_cam) Σ_c  mean(|Î_c - I_c|)
+L_ssim   = 1 - (1 / N_cam) Σ_c SSIM(Î_c, I_c)
+L_temp   = mean_{i in survivors} || (x_i^(t) + v_i^(t) Δt) - x̂_i^(t+1) ||_2^2
+L_occ    = mean_{v in known} BCE(y_v, ŷ_v)     # sum is a config switch
+L_sparse = (1 / N) Σ_i  α_i * max(0, s_x s_y s_z - τ_max)
 ```
 
-`L_photo` should be normalized per pixel. `L_temp` needs the slot
-correspondence above; feedforward predictions are not an unordered set.
-`L_occ` is a sum, so it scales with `|V|`, and it has no wire weight. A
-positive weight or a focal term is still recommended, and unknown voxels stay
-masked. `L_sparse` penalizes volume. It does not add density on edges. The
-edge branch is what adds density. Whether the sum is gated by `wire_prob` is
-open question 1 above.
+`x̂_i^(t+1)` is the reprojected point, not slot `i` of the next cloud.
+Survivors are splats that are valid at `t`, land on a valid slot at `t+1`,
+are in front of the camera, and are not hidden by a closer surface.
+
+Defaults: `λ1=0.8`, `λ2=0.2`, `λ3=1`, `λ4=0`, `λ5=0.01`, `τ_max=0.008`.
+`λ3` and `λ5` are starting points, not numbers Andy set. SSIM uses a Gaussian
+window, `C1=0.01²`, `C2=0.03²`, reflect padding, images in `[0, 1]`.
+
+An optional `λ_velocity` (default 0) is mean squared error against
+`MultiCameraSample.gt_velocity`, a single flight-frame m/s vector. Build it
+from two logged actor origins with `velocity_from_positions`. Cosys-AirSim and
+Colosseum expose those origins as `simGetObjectPose`. The capture scripts do
+not write them yet; the loss is ready when a recording does.
 
 ## Rasterizer
 
@@ -453,7 +496,7 @@ possible substitute with the same job; the adapter does not import it. The
 binding site is `DiffGaussianRasterizationAdapter`. `GaussianRasterizer` picks
 it only when the import succeeds and CUDA is available. CI installs a CPU
 PyTorch wheel, does not compile the extension, and renders tests with
-`ReferenceSplatRenderer`.
+`ReferenceSplatRenderer`. Windows build steps are in `docs/RASTERIZER.md`.
 
 ## Phase roadmap
 
@@ -462,7 +505,7 @@ PyTorch wheel, does not compile the extension, and renders tests with
 | 1 Foundation, ingestion, calibration | this tree | schema, sync, Colosseum + Cosys-AirSim + TartanAir + fixture, occupancy cache, tensor contract |
 | 2 ViT and 2D-to-3D lift | this tree | shared ViT, pose tokens, plane-sweep lift, depth pretrain |
 | 3 Splat parameter heads | this tree | geometry, appearance, dynamics, wire slots, pack into `[B, N, 62]` |
-| 4 Rasterizer and losses | adapter stubbed, reference renderer in | CUDA rasterizer training, photometric, temporal, sparsity |
+| 4 Rasterizer and losses | this tree | CUDA rasterizer training, photometric, reprojected temporal, sparsity, occupancy placeholder |
 | 5 Relight, occupancy, export | occupancy cache only | glare head, occupancy head, ONNX/TensorRT |
 
 Sub-millisecond inference for a ViT over four high-resolution images plus a
@@ -491,9 +534,10 @@ These are disagreements with the attached spec, not silent edits.
    The cache is local. Wire resolution is unsolved.
 7. `B` is a batch of timesteps, not "the video frame sequence" as one axis.
 8. Velocity units were unspecified. They are m/s in the world frame.
-9. The loss equations were images in the PDF. Andy's text form is now the
-   formulation Phase 4 implements. It is recorded under Losses. Coefficients
-   and `τ_max` stay unset.
+9. The loss equations were images in the PDF. Andy's text form is what Phase 4
+   implements. `λ1`, `λ2` are 0.8 and 0.2. `L_sparse` is divided by `N`.
+   `L_temp` reprojects. `L_occ` is mean-normalized and masked. `τ_max` defaults
+   to 0.008 m³. See Losses.
 10. Adaptive density in a feedforward net is not 3DGS densification. Phase 3
     uses a fixed slot budget, an edge prior at image resolution, and a
     `valid` mask. `N` does not change when a wire appears.

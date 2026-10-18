@@ -18,17 +18,22 @@ otherwise. Both consume activated parameters: post-exp scales, post-sigmoid
 opacity, unit wxyz quaternions, and raw degree-3 SH. See
 ``aerosplat.models.gaussians``.
 
-The CUDA kernel derives focal length from ``tan(fov/2)`` and the image size,
-which places the principal point at the image center. The reference renderer
-uses the full ``K``, including ``cx`` and ``cy``. Those two disagree when the
-principal point is off center. Phase 4 should check the first CUDA render
-against this reference on a centered camera.
+The stock CUDA kernel has no ``cx, cy`` argument. It turns NDC into pixels
+with ``((ndc + 1) * size - 1) / 2`` and derives the covariance focal length
+from ``tan(fov/2)`` and the image size. This module does **not** fork the
+extension. :func:`diff_gaussian_camera_tensors` builds a projection whose NDC,
+run through that exact ``ndc2Pix``, lands on the OpenCV pixel
+``f * x/z + c``. ``tanfov`` is ``(size / 2) / f``, so the kernel's focal
+length stays ``fx`` / ``fy``. The covariance Jacobian does not depend on the
+principal point. The symmetric FOV clamp inside the kernel
+(``1.3 * tanfov`` about the optical axis) is unchanged; a principal point far
+from the image center can still clip that Jacobian. See ``docs/RASTERIZER.md``.
 """
 
 from __future__ import annotations
 
 import importlib
-import math
+import inspect
 
 import torch
 import torch.nn as nn
@@ -115,33 +120,55 @@ def eval_sh(sh: Tensor, dirs: Tensor, degree: int = 3) -> Tensor:
 def projection_matrix(
     znear: float,
     zfar: float,
-    fov_x: float,
-    fov_y: float,
-    *,
-    device: torch.device | None = None,
-    dtype: torch.dtype = torch.float32,
+    fx: Tensor | float,
+    fy: Tensor | float,
+    cx: Tensor | float,
+    cy: Tensor | float,
+    height: int,
+    width: int,
 ) -> Tensor:
-    """OpenGL-style projection used by ``diff-gaussian-rasterization``.
+    """Row-major projection aligned with the stock kernel's ``ndc2Pix``.
 
-    The principal point is the image center. ``fov_x`` and ``fov_y`` are radians.
+    ``diff-gaussian-rasterization`` maps NDC to a pixel with
+    ``((ndc + 1) * size - 1) / 2`` and has no principal-point argument. The
+    matrix below is the unique scale-and-shift that makes that formula equal
+    the OpenCV pixel ``f * (x/z) + c``:
+
+        ndc_x = (2 fx / W) * (x/z) + (2 cx - W + 1) / W
+
+    A centered kernel (principal point ``(W - 1) / 2``) is the special case
+    ``cx = (W - 1) / 2``, which zeros the off-diagonal. ``cx = W / 2`` is half
+    a pixel to the right of that, and the shift term is ``1 / W``.
+
+    ``fx``, ``fy``, ``cx``, ``cy`` are scalars. The matrix is built on
+    ``fx``'s device when ``fx`` is a tensor, so an off-center ``K`` stays on
+    the same CUDA device as the cloud.
     """
     if not 0 < znear < zfar:
         raise ValueError(f"need 0 < znear < zfar, got {znear}, {zfar}")
-    tan_half_y = math.tan(fov_y * 0.5)
-    tan_half_x = math.tan(fov_x * 0.5)
-    top = tan_half_y * znear
-    bottom = -top
-    right = tan_half_x * znear
-    left = -right
-    matrix = torch.zeros(4, 4, device=device, dtype=dtype)
-    matrix[0, 0] = 2.0 * znear / (right - left)
-    matrix[1, 1] = 2.0 * znear / (top - bottom)
-    matrix[0, 2] = (right + left) / (right - left)
-    matrix[1, 2] = (top + bottom) / (top - bottom)
+    if height < 1 or width < 1:
+        raise ValueError(f"image size must be positive, got {height}x{width}")
+    fx_t = torch.as_tensor(fx)
+    matrix = fx_t.new_zeros(4, 4)
+    width_t = fx_t.new_tensor(float(width))
+    height_t = fx_t.new_tensor(float(height))
+    matrix[0, 0] = 2.0 * fx_t / width_t
+    matrix[1, 1] = 2.0 * torch.as_tensor(fy, device=fx_t.device, dtype=fx_t.dtype) / height_t
+    matrix[0, 2] = (
+        2.0 * torch.as_tensor(cx, device=fx_t.device, dtype=fx_t.dtype) - width_t + 1.0
+    ) / width_t
+    matrix[1, 2] = (
+        2.0 * torch.as_tensor(cy, device=fx_t.device, dtype=fx_t.dtype) - height_t + 1.0
+    ) / height_t
     matrix[3, 2] = 1.0
     matrix[2, 2] = zfar / (zfar - znear)
     matrix[2, 3] = -(zfar * znear) / (zfar - znear)
     return matrix
+
+
+def ndc_to_pixel(ndc: Tensor, size: int) -> Tensor:
+    """Stock CUDA ``ndc2Pix``: ``((ndc + 1) * size - 1) / 2``."""
+    return ((ndc + 1.0) * float(size) - 1.0) * 0.5
 
 
 def diff_gaussian_camera_tensors(
@@ -163,32 +190,70 @@ def diff_gaussian_camera_tensors(
     """
     if K.ndim != 2 or R.ndim != 2 or t.ndim != 1:
         raise ValueError("pass one camera, not a batch")
+    if height < 1 or width < 1:
+        raise ValueError(f"image size must be positive, got {height}x{width}")
     w2c = K.new_zeros(4, 4)
     w2c[:3, :3] = R
     w2c[:3, 3] = t
     w2c[3, 3] = 1
     fx = K[0, 0]
     fy = K[1, 1]
+    cx = K[0, 2]
+    cy = K[1, 2]
+    if float(fx) <= 0 or float(fy) <= 0:
+        raise ValueError(f"focal length must be positive, got fx={float(fx)} fy={float(fy)}")
+    # The kernel recomputes focal = size / (2 * tanfov). This choice makes that
+    # focal equal fx / fy. It is intentionally not the half-angle to the image
+    # corner when the principal point is off center.
     tanfovx = float((0.5 * width) / fx)
     tanfovy = float((0.5 * height) / fy)
-    proj = projection_matrix(
-        znear,
-        zfar,
-        2.0 * math.atan(tanfovx),
-        2.0 * math.atan(tanfovy),
-        device=K.device,
-        dtype=K.dtype,
-    )
+    proj = projection_matrix(znear, zfar, fx, fy, cx, cy, height, width)
     view = w2c.transpose(0, 1).contiguous()
     full = (view @ proj.transpose(0, 1)).contiguous()
     campos = torch.linalg.inv(view)[3, :3].contiguous()
     return {
         "viewmatrix": view,
         "projmatrix": full,
+        "projection": proj,
+        "w2c": w2c,
         "campos": campos,
         "tanfovx": tanfovx,
         "tanfovy": tanfovy,
     }
+
+
+def kernel_pixels(
+    xyz: Tensor,
+    K: Tensor,
+    R: Tensor,
+    t: Tensor,
+    height: int,
+    width: int,
+    *,
+    znear: float = 0.01,
+    zfar: float = 100.0,
+) -> Tensor:
+    """Pixels the stock CUDA kernel assigns to world points ``xyz`` ``[N, 3]``.
+
+    Applies the same projection matrix and ``ndc2Pix`` as
+    ``diff-gaussian-rasterization``. CPU tests compare this with the OpenCV
+    ``u = fx x/z + cx`` formula; a CUDA render is only trustworthy where the
+    two agree.
+    """
+    if xyz.ndim == 1:
+        pixels = kernel_pixels(xyz.unsqueeze(0), K, R, t, height, width, znear=znear, zfar=zfar)
+        return pixels[0]
+    if xyz.ndim != 2 or xyz.shape[-1] != 3:
+        raise ValueError(f"xyz must be [N, 3], got {tuple(xyz.shape)}")
+    mats = diff_gaussian_camera_tensors(K, R, t, height, width, znear=znear, zfar=zfar)
+    full = mats["projection"] @ mats["w2c"]
+    ones = xyz.new_ones(xyz.shape[0], 1)
+    clip = torch.cat((xyz, ones), dim=-1) @ full.transpose(0, 1)
+    ndc = clip[:, :2] / clip[:, 3:4]
+    return torch.stack(
+        (ndc_to_pixel(ndc[:, 0], width), ndc_to_pixel(ndc[:, 1], height)),
+        dim=-1,
+    )
 
 
 class ReferenceSplatRenderer(nn.Module):
@@ -270,10 +335,16 @@ class DiffGaussianRasterizationAdapter(nn.Module):
     """Map a packed cloud onto ``diff_gaussian_rasterization``.
 
     Calling this without the extension, or without CUDA, raises
-    :class:`RuntimeError`. The reference renderer is the CPU path. Phase 4
-    trains through this adapter; the argument names match the Inria
-    ``GaussianRasterizer.forward`` (``means3D``, ``means2D``, ``opacities``,
-    ``shs``, ``scales``, ``rotations``).
+    :class:`RuntimeError`. The reference renderer is the CPU path. Training
+    goes through this adapter. Velocity is not passed: the kernel arguments
+    are the Inria names ``means3D``, ``means2D``, ``opacities``, ``shs``,
+    ``scales``, ``rotations``, taken from the first 59 channels.
+
+    The forward runs in fp32 with autocast off. The extension's backward is
+    not reliable in fp16, and AMP is applied to the ViT around this call.
+    ``means2D`` is an auxiliary leaf the kernel writes screen-space gradients
+    into; those are not part of the 62-vector. World-space gradients return
+    through ``means3D`` and therefore through the packed cloud into the ViT.
     """
 
     def __init__(self, sh_degree: int = 3, znear: float = 0.01, zfar: float = 100.0) -> None:
@@ -302,62 +373,73 @@ class DiffGaussianRasterizationAdapter(nn.Module):
             )
         if packed.device.type != "cuda":
             raise RuntimeError("diff-gaussian-rasterization requires CUDA tensors")
-        rasterizer_view(packed)
-        if background is None:
-            background = packed.new_zeros(3)
-        else:
-            background = background.to(device=packed.device, dtype=packed.dtype)
-        parts = unpack_gaussians(packed)
-        outputs: dict[str, Tensor] = {}
-        batch, count, _ = packed.shape
-        for name, camera in cameras.items():
-            height, width = _camera_hw(camera, None if images is None else images.get(name))
-            frames = []
-            for index in range(batch):
-                if valid is None:
-                    mask = torch.ones(count, dtype=torch.bool, device=packed.device)
-                else:
-                    mask = valid[index]
-                if int(mask.sum()) == 0:
-                    frames.append(background.view(3, 1, 1).expand(3, height, width).clone())
-                    continue
-                matrices = diff_gaussian_camera_tensors(
-                    camera["K"][index],
-                    camera["R"][index],
-                    camera["t"][index],
-                    height,
-                    width,
-                    znear=self.znear,
-                    zfar=self.zfar,
-                )
-                settings = module.GaussianRasterizationSettings(
-                    image_height=height,
-                    image_width=width,
-                    tanfovx=matrices["tanfovx"],
-                    tanfovy=matrices["tanfovy"],
-                    bg=background,
-                    scale_modifier=1.0,
-                    viewmatrix=matrices["viewmatrix"],
-                    projmatrix=matrices["projmatrix"],
-                    sh_degree=self.sh_degree,
-                    campos=matrices["campos"],
-                    prefiltered=False,
-                    debug=False,
-                )
-                means = parts["xyz"][index, mask]
-                means_2d = torch.zeros_like(means, requires_grad=True)
-                rasterizer = module.GaussianRasterizer(raster_settings=settings)
-                rendered, _radii = rasterizer(
-                    means3D=means,
-                    means2D=means_2d,
-                    opacities=parts["opacity"][index, mask],
-                    shs=parts["sh"][index, mask],
-                    scales=parts["scale"][index, mask],
-                    rotations=parts["quat"][index, mask],
-                )
-                frames.append(rendered)
-            outputs[name] = torch.stack(frames, dim=0)
-        return outputs
+        # The CUDA backward is fp32. A ViT autocast must not cast the cloud.
+        with torch.autocast(device_type="cuda", enabled=False):
+            packed = packed.float()
+            rasterizer_view(packed)
+            if background is None:
+                background = packed.new_zeros(3)
+            else:
+                background = background.to(device=packed.device, dtype=torch.float32)
+            parts = unpack_gaussians(packed)
+            outputs: dict[str, Tensor] = {}
+            batch, count, _ = packed.shape
+            for name, camera in cameras.items():
+                height, width = _camera_hw(camera, None if images is None else images.get(name))
+                frames = []
+                for index in range(batch):
+                    if valid is None:
+                        mask = torch.ones(count, dtype=torch.bool, device=packed.device)
+                    else:
+                        mask = valid[index]
+                    if int(mask.sum()) == 0:
+                        frames.append(background.view(3, 1, 1).expand(3, height, width).clone())
+                        continue
+                    matrices = diff_gaussian_camera_tensors(
+                        camera["K"][index].float(),
+                        camera["R"][index].float(),
+                        camera["t"][index].float(),
+                        height,
+                        width,
+                        znear=self.znear,
+                        zfar=self.zfar,
+                    )
+                    settings = _raster_settings(
+                        module,
+                        image_height=height,
+                        image_width=width,
+                        tanfovx=matrices["tanfovx"],
+                        tanfovy=matrices["tanfovy"],
+                        bg=background,
+                        scale_modifier=1.0,
+                        viewmatrix=matrices["viewmatrix"],
+                        projmatrix=matrices["projmatrix"],
+                        sh_degree=self.sh_degree,
+                        campos=matrices["campos"],
+                        prefiltered=False,
+                        debug=False,
+                        antialiasing=False,
+                    )
+                    means = parts["xyz"][index, mask].contiguous()
+                    # Screen-space auxiliary. The kernel's backward writes it;
+                    # world gradients travel through means3D.
+                    means_2d = torch.zeros_like(means, requires_grad=True)
+                    try:
+                        means_2d.retain_grad()
+                    except RuntimeError:
+                        pass
+                    rasterizer = module.GaussianRasterizer(raster_settings=settings)
+                    rendered, _radii = rasterizer(
+                        means3D=means,
+                        means2D=means_2d,
+                        opacities=parts["opacity"][index, mask].contiguous(),
+                        shs=parts["sh"][index, mask].contiguous(),
+                        scales=parts["scale"][index, mask].contiguous(),
+                        rotations=parts["quat"][index, mask].contiguous(),
+                    )
+                    frames.append(rendered)
+                outputs[name] = torch.stack(frames, dim=0)
+            return outputs
 
 
 class GaussianRasterizer(nn.Module):
@@ -429,6 +511,18 @@ class GaussianRasterizer(nn.Module):
                 background=self.background,
             )
         return outputs
+
+
+def _raster_settings(module, **kwargs):
+    """Construct settings, dropping keys this build of the extension does not take.
+
+    The stock Inria signature has no ``antialiasing`` field. Forks that added
+    one usually default it, and we pass ``False`` when the name exists. The
+    principal point is not a settings field; it lives in the projection matrix.
+    """
+    signature = inspect.signature(module.GaussianRasterizationSettings)
+    accepted = {key: value for key, value in kwargs.items() if key in signature.parameters}
+    return module.GaussianRasterizationSettings(**accepted)
 
 
 def _camera_hw(camera: dict, image: Tensor | None) -> tuple[int, int]:

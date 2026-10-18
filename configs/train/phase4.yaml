@@ -1,0 +1,46 @@
+# @package train
+# Phase 4 loop. Coefficients: λ1=0.8 and λ2=0.2 are decided. λ3..λ5 and τ_max
+# were unset in Andy's equations; the values below are the starting point
+# documented in docs/ARCHITECTURE.md. λ4 and λ_velocity stay 0 until Phase 5
+# and until a sim export provides actor velocities.
+seed: 0
+steps: 1000
+batch_size: 1
+grad_accum_steps: 1
+lr: 1.0e-4
+weight_decay: 0.0
+amp: false
+device: auto
+backend: auto
+distributed: false
+gradient_checkpointing: true
+num_workers: 0
+log_every: 50
+ckpt_every: 500
+save_last: true
+log_dir: outputs/train
+resume: null
+wandb: false
+camera_names: null
+clip_grad: 1.0
+lambda_photo: 0.8
+lambda_ssim: 0.2
+lambda_temp: 1.0
+lambda_occ: 0.0
+lambda_sparse: 0.01
+lambda_velocity: 0.0
+# Volume of the 0.2 m base-scale cube. The hinge is closed at init.
+tau_max: 0.008
+ssim_window: 11
+occ_pos_weight: 1.0
+occ_focal_gamma: 0.0
+occ_reduction: mean
+occ_compute: false
+temp_depth_abs: 0.5
+temp_depth_rel: 0.1
+temp_max_search: 1.0
+note: >
+  Default loop. Laptop recipes override amp, the step count, and the paired
+  model config. backend=auto uses diff-gaussian-rasterization when CUDA can
+  import it, and the CPU reference splatter otherwise. Do not train with the
+  reference splatter at 224 px; it is O(N*H*W).

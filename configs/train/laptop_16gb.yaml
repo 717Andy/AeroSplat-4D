@@ -1,0 +1,25 @@
+# @package train
+defaults:
+  - phase4
+  - _self_
+
+# 16 GB NVIDIA. Pair with model=vit_base at 224 px. The extra memory relative
+# to the 8 GB recipe is the backbone, not the splat count (N stays 4096).
+amp: true
+device: auto
+backend: auto
+distributed: false
+gradient_checkpointing: true
+batch_size: 1
+grad_accum_steps: 1
+steps: 100000
+lr: 1.0e-4
+log_every: 50
+ckpt_every: 1000
+log_dir: outputs/train_16gb
+num_workers: 0
+note: >
+  16 GB target is ViT-B/14 at 224 px, batch 1, four cameras, checkpointing
+  on. ViT-S at model.img_size=336 also fits this card (336 / 14 = 24) and is
+  the higher-resolution alternative; do not combine ViT-B with 336. 518 px
+  is the DINOv2 native grid and is tight even here. Still batch 1.

@@ -1,0 +1,8 @@
+# Primary config for torchrun on a later multi-GPU cluster.
+# Default backbone is ViT-S so a 16 GB GPU still fits. Override model=vit_large
+# only when each rank has the memory for an unfrozen ViT-L.
+defaults:
+  - /config
+  - override /model: vit_small
+  - override /train: ddp
+  - _self_

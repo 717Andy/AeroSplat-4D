@@ -3,6 +3,7 @@ defaults:
   - rig: uam_quad
   - model: vit_small
   - pretrain: depth
+  - train: phase4
   - _self_
 
 seed: 0
