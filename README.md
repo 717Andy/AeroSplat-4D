@@ -26,7 +26,7 @@ covers formats and why the Stanford Drone Dataset is not used.
 aerosplat/          package
   data/             sync, canonical / AirSim / TartanAir adapters, occupancy cache
   geometry/         poses, unprojection, voxelization, software raycast
-  models/           ViT, plane-sweep lift, Phase 3 splat heads, CPU reference splatter
+  models/           ViT, plane-sweep lift, splat heads, rasterizer, losses
   capture/          AirSim-family rig capture (Cosys-AirSim, Colosseum) and render benchmark
   vis/              multi-camera alignment check
 configs/            Hydra configs (data + rig groups)
@@ -35,12 +35,11 @@ scripts/            fixture, capture, cache, sanity
 tests/              CPU tests
 ```
 
-The relight and occupancy heads still raise `NotImplementedError`.
-`diff-gaussian-rasterization` is imported only through `importlib` when a
-caller asks for that backend and the extension is installed. CI is CPU-only
-lint and tests; it does not compile CUDA and it does not download pretrained
-weights. The reference splatter in `aerosplat.models.rasterizer` is what the
-CPU tests render.
+The relight head and the real occupancy head still raise `NotImplementedError`.
+Phase 4 trains through `diff-gaussian-rasterization` when that extension
+imports and CUDA is available. The import is `importlib` inside the call, so
+CPU CI never compiles it. The reference splatter renders the CPU tests.
+`L_occ` is wired to a one-logit placeholder and the Phase 1 cache, with weight 0.
 
 ## Install
 
@@ -51,10 +50,10 @@ pip install numpy pyyaml omegaconf hydra-core pillow pytest ruff matplotlib
 ```
 
 `--no-deps` matters if a CPU torch wheel is already installed: a normal
-`pip install -e .` can replace it with a CUDA build. GPU training machines can
-install a CUDA torch instead. `diff-gaussian-rasterization` is an optional
-CUDA extension for Phase 4 training and is not part of this install. CPU runs
-use the reference splatter.
+`pip install -e .` can replace it with a CUDA build. GPU training machines
+install a CUDA torch first, then this package with `--no-deps`. The CUDA
+rasterizer is a separate source build. Windows steps for an MSI Vector 17 HX
+are in `docs/RASTERIZER.md`. CPU runs use the reference splatter.
 
 ## Fixture and sanity check
 
@@ -110,14 +109,79 @@ Hydra overrides use the same `data=` and `rig=` groups as `configs/`.
 | 1 | Ingestion, calibration, occupancy cache, tensor contract. |
 | 2 | Shared ViT, pose tokens, plane-sweep lift, depth pretraining. |
 | 3 | Geometry, appearance, and dynamics heads, wire slots, `[B, N, 62]`. |
-| 4 | Differentiable CUDA rasterizer training, photometric and temporal losses. |
+| 4 | Differentiable CUDA rasterizer, photometric, reprojected temporal, and sparsity losses. |
 | 5 | Glare residual, occupancy head, export. |
 
 Disagreements with the original spec (scale bounds, SH versus flare, occupancy
 BCE, the Stanford set, sub-millisecond inference) are listed in
-`docs/ARCHITECTURE.md`. Andy's loss equations are recorded there. Phase 4
-implements them. Phase 3 supplies the slot index and the per-Gaussian wire
-probability they need. Coefficients and `τ_max` are still unset.
+`docs/ARCHITECTURE.md`. Andy's loss equations are implemented there.
+`λ1 = 0.8`, `λ2 = 0.2`. `L_sparse` is his ungated volume hinge divided by `N`,
+with `τ_max = 0.008` m³. `L_temp` reprojects `x + v Δt` into the next frame
+instead of comparing pixel slots, which are wrong under ego-motion. `λ4 = 0`
+until the Phase 5 occupancy head exists.
+
+## Training
+
+Configs are Hydra. The loop is `scripts/train.py`: AMP on CUDA, gradient
+checkpointing on the ViT, gradient accumulation, seed control, checkpoints,
+and a JSONL of every loss term. TensorBoard is used when it is installed
+(`pip install tensorboard`). W&B is off unless `train.wandb=true` and `wandb`
+imports. Rendered-versus-ground-truth grids are written as PNG next to the log.
+
+8 GB laptop (ViT-S/14, 224 px, batch 1, four cameras). Install the rasterizer
+first (`docs/RASTERIZER.md`):
+
+```bash
+python scripts/train.py --config-name experiment/laptop_8gb
+```
+
+16 GB laptop (ViT-B/14, 224 px, same splat budget):
+
+```bash
+python scripts/train.py --config-name experiment/laptop_16gb
+```
+
+ViT-S at 336 px on that 16 GB card, instead of ViT-B:
+
+```bash
+python scripts/train.py --config-name experiment/laptop_16gb model=vit_small model.img_size=336 train.log_dir=outputs/train_16gb_336
+```
+
+If the 8 GB forward runs out of memory, lower the plane count or the image
+size. 112 is divisible by the patch size of 14. Accumulation does not shrink
+one forward.
+
+```bash
+python scripts/train.py --config-name experiment/laptop_8gb model.depth_planes=16
+python scripts/train.py --config-name experiment/laptop_8gb model.img_size=112
+```
+
+Multi-GPU, later, with torchrun. One process per GPU. Rank 0 writes logs and
+checkpoints. The default backbone is ViT-S; override `model=vit_large` only
+when each GPU can hold it.
+
+```bash
+torchrun --nproc_per_node=4 scripts/train.py --config-name experiment/ddp
+```
+
+A short CPU smoke, no CUDA extension, reference splatter, tiny ViT:
+
+```bash
+python scripts/train.py model=vit_tiny train.steps=2 train.device=cpu train.backend=reference train.lambda_temp=0
+```
+
+`L_temp` needs a later frame of the same scene. The fixture has that. Static
+pretraining sets (`aerial_megadepth`, `matrixcity`) do not, and the term is
+skipped. Actor-velocity supervision stays at weight 0 until a sample carries
+`gt_velocity` (m/s, flight frame) from logged Cosys/Colosseum actor poses.
+`train.lambda_velocity` turns it on.
+
+Useful overrides: `train.steps`, `train.lr`, `train.tau_max`,
+`train.lambda_sparse`, `train.grad_accum_steps`, `train.occ_compute=true`
+(runs the placeholder occupancy term even while `lambda_occ` is 0),
+`data.root`. Checkpoints land in `train.log_dir` (`last.pt`, and
+`step_NNNNNN.pt` every `ckpt_every` steps). Resume with
+`train.resume=outputs/train_8gb/last.pt`.
 
 ## Tests
 

@@ -1,0 +1,28 @@
+# @package train
+defaults:
+  - phase4
+  - _self_
+
+# 8 GB NVIDIA, MSI Vector 17 HX class. Pair with model=vit_small (the
+# experiment config does). ViT-S/14, 224 px, 4 cameras, batch 1.
+# Gradient checkpointing is what fits the forward. Accumulation does not
+# shrink activation memory; it only lengthens the effective batch.
+amp: true
+device: auto
+backend: auto
+distributed: false
+gradient_checkpointing: true
+batch_size: 1
+grad_accum_steps: 1
+steps: 100000
+lr: 1.0e-4
+log_every: 50
+ckpt_every: 1000
+log_dir: outputs/train_8gb
+num_workers: 0
+note: >
+  8 GB target. If the forward OOMs, lower model.depth_planes (32 -> 16) or
+  set model.img_size=112 (divisible by patch 14). Do not switch to vit_base
+  on this card. num_workers stays 0: Windows spawn plus Hydra is not worth it
+  when the ViT is the bottleneck. Install the CUDA rasterizer first
+  (docs/RASTERIZER.md). λ_occ stays 0.

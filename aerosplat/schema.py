@@ -111,12 +111,19 @@ class MultiCameraSample:
 
     ``cameras`` keeps rig order. Resolutions may differ across names, so there
     is no ``[N, 3, H, W]`` image tensor on this object.
+
+    ``gt_velocity`` is an optional flight-frame rigid velocity in m/s, from a
+    logged actor pose (Cosys-AirSim / Colosseum ``simGetObjectPose``). It is
+    one vector for the sample, not per Gaussian. The training loop broadcasts
+    it onto every valid slot when ``λ_velocity`` is on. Static worlds use the
+    zero vector. Absence means "no supervision", not "the world is static".
     """
 
     scene_id: str
     sample_index: int
     timestamp: float
     cameras: dict[str, CameraFrame] = field(default_factory=dict)
+    gt_velocity: Tensor | None = None
 
     def __post_init__(self) -> None:
         if not self.cameras:
@@ -126,6 +133,12 @@ class MultiCameraSample:
         for name, camera in self.cameras.items():
             if camera.name != name:
                 raise ValueError(f"camera key {name!r} != frame name {camera.name!r}")
+        if self.gt_velocity is not None:
+            velocity = torch.as_tensor(self.gt_velocity, dtype=torch.float32)
+            velocity = velocity.reshape(3).contiguous()
+            if not torch.isfinite(velocity).all():
+                raise ValueError("gt_velocity contains non-finite values")
+            self.gt_velocity = velocity
 
     def __len__(self) -> int:
         return len(self.cameras)

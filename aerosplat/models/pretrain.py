@@ -60,6 +60,7 @@ def prepare_rig(sample: MultiCameraSample, size: int, patch_size: int) -> MultiC
         sample_index=resized.sample_index,
         timestamp=resized.timestamp,
         cameras=cameras,
+        gt_velocity=resized.gt_velocity,
     )
 
 

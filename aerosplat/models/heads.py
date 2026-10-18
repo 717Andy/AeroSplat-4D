@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import math
 
+import torch
 import torch.nn as nn
 from torch import Tensor
 
@@ -139,7 +140,32 @@ class RelightHead(_UnimplementedHead):
 
 
 class OccupancyHead(_UnimplementedHead):
-    """Local voxel logits. Supervise with the cached grid, masking unknown cells."""
+    """Local voxel logits. Supervise with the cached grid, masking unknown cells.
+
+    Phase 5 reads the lifted features and predicts a logit per voxel. Until
+    that head exists, :class:`PlaceholderOccupancyHead` is what ``L_occ``
+    trains against so the loss and the cache wiring can be tested.
+    """
 
     phase = "Phase 5"
     head_name = "occupancy"
+
+
+class PlaceholderOccupancyHead(nn.Module):
+    """One shared logit, broadcast over the Phase 1 cache grid.
+
+    This is not the occupancy head. It does not read the ViT. It exists so
+    ``L_occ`` has a tensor to differentiate and a parameter to checkpoint
+    before Phase 5 replaces it. The training weight defaults to 0.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.logit = nn.Parameter(torch.zeros(()))
+
+    def forward(self, batch: int, dims: tuple[int, int, int]) -> Tensor:
+        if batch < 1:
+            raise ValueError("batch must be >= 1")
+        if len(dims) != 3 or any(int(size) < 1 for size in dims):
+            raise ValueError(f"voxel dims must be three positive ints, got {dims}")
+        return self.logit.expand(int(batch), int(dims[0]), int(dims[1]), int(dims[2]))

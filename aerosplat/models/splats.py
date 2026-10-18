@@ -20,16 +20,13 @@ write the ``valid`` mask. They do not gather, pad, or permute, so an ONNX
 export at a fixed rig resolution has a fixed ``N``, and index ``i`` is the
 same pixel slot at the next timestep.
 
-``temporal_residual`` is the quantity inside Andy's sum, plus a weight
-``valid_t * valid_{t+1}`` so an extra slot that is off in either frame does
-not dominate the mean. Phase 4 should reduce with that weight. The prediction
-``x + v Δt`` is the loss target, not a second matching stage.
-
-What this identity is not: a tracked world point. Under ego-motion the same
-pixel looks at a different surface point next frame, so a static world still
-produces a nonzero residual if velocity stays zero. That is a property of
-pixel slots plus Andy's index-aligned formula. A world-point tracker would
-break the static shape. See the open questions in ``docs/ARCHITECTURE.md``.
+``temporal_residual`` is the pixel-slot quantity inside a literal reading of
+Andy's sum, plus a weight ``valid_t * valid_{t+1}``. It is **not** the Phase 4
+training loss. Under ego-motion the same pixel looks at a different surface
+point next frame, so a static world still produces a nonzero residual at
+``v = 0``. Phase 4 keeps the slot layout (``N`` does not change, export stays
+static) and builds correspondence by reprojecting ``x + v Δt`` into the next
+frame. See :func:`aerosplat.models.temporal.reprojected_temporal_loss`.
 """
 
 from __future__ import annotations
@@ -263,8 +260,9 @@ def temporal_residual(
     both ``[B, N, 3]``. ``weight`` is ``[B, N]`` and is 1 only where the slot
     is valid at both times. ``dt`` is seconds, a scalar or ``[B]``.
 
-    Raises if the slot layouts differ. Phase 4 should not Hungarian-match
-    these tensors; the index is the correspondence.
+    Raises if the slot layouts differ. This is the pixel-slot residual. The
+    training loss reprojects instead, because this index is not a world point
+    once the camera moves. Do not Hungarian-match the packed tensors.
     """
     if not cloud_t.same_layout(cloud_tp1):
         raise ValueError(

@@ -1,0 +1,8 @@
+# Primary config for a 16 GB laptop GPU. ViT-B/14 at 224 px.
+# ViT-S at 336 px is the other use of this card: add model.img_size=336 and
+# switch the model override back to vit_small. Do not run ViT-B at 336.
+defaults:
+  - /config
+  - override /model: vit_base
+  - override /train: laptop_16gb
+  - _self_

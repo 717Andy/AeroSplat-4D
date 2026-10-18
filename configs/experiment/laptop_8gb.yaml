@@ -1,0 +1,7 @@
+# Primary config for an 8 GB laptop GPU (MSI Vector 17 HX class).
+# ViT-S/14, 224 px, batch 1, AMP, gradient checkpointing, CUDA rasterizer.
+defaults:
+  - /config
+  - override /model: vit_small
+  - override /train: laptop_8gb
+  - _self_
