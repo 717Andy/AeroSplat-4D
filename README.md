@@ -186,10 +186,32 @@ Useful overrides: `train.steps`, `train.lr`, `train.tau_max`,
 `step_NNNNNN.pt` every `ckpt_every` steps). Resume with
 `train.resume=outputs/train_8gb/last.pt`.
 
+## Workbench
+
+The debugging UI lives outside the training package, in `server/` and `web/`.
+It serves recorded episodes, runs the feedforward model, and draws sorted
+EWA splats, occupancy, wires, and camera frustums. No simulator and no GPU
+are required: `episodes/demo` is baked from the tiny fixture.
+
+```bash
+python -m server.dev
+```
+
+That starts the API on `127.0.0.1:8000` and the Vite UI on `127.0.0.1:5173`.
+Windows and macOS steps, the AGS1 / AOC1 binary layouts, and the sun-slider
+contract are in `docs/WORKBENCH.md`.
+
 ## Tests
 
 `pytest` generates its own tiny recordings under the temp directory and also
-reads `fixtures/tiny_rig`. No dataset download and no GPU.
+reads `fixtures/tiny_rig`. No dataset download and no GPU. Workbench tests
+are a separate path because they need the API extras:
+
+```bash
+pip install -r server/requirements.txt
+pytest server/tests
+cd web && npm ci && npm run typecheck && npm test
+```
 
 ## Phase 2
 

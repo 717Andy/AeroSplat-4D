@@ -1,0 +1,16 @@
+{
+  "format": "aerosplat.multicam.v1",
+  "world_frame": "enu_z_up",
+  "camera_frame": "opencv",
+  "extrinsics": "world_to_camera",
+  "depth_kind": "planar_z",
+  "scenes": [
+    "flight0"
+  ],
+  "sync": {
+    "policy": "interpolate_pose",
+    "reference_camera": "front",
+    "max_image_dt": 0.15,
+    "require_all_cameras": true
+  }
+}
