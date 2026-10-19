@@ -45,6 +45,7 @@ aerosplat-capture = "aerosplat.capture.colosseum:main"
 aerosplat-pretrain = "aerosplat.models.pretrain:main"
 aerosplat-train = "aerosplat.train:main"
 aerosplat-benchmark = "aerosplat.capture.benchmark:main"
+aerosplat-synthetic = "aerosplat.synth.batch:main"
 aerosplat-export = "aerosplat.export:main"
 
 [tool.setuptools.packages.find]

@@ -50,6 +50,8 @@ def resize_camera_frame(frame: CameraFrame, height: int, width: int) -> CameraFr
             mode="bilinear",
             align_corners=False,
         ).squeeze(0)
+    velocity = _resize_map(frame.velocity, height, width)
+    instance = _resize_instance(frame.instance, height, width)
     return replace(
         frame,
         image=image,
@@ -57,6 +59,8 @@ def resize_camera_frame(frame: CameraFrame, height: int, width: int) -> CameraFr
         depth=depth,
         segmentation=segmentation,
         clean_image=clean,
+        velocity=velocity,
+        instance=instance,
     )
 
 
@@ -72,6 +76,24 @@ def resize_sample(
         else:
             cameras[name] = frame
     return replace(sample, cameras=cameras)
+
+
+def _resize_map(velocity, height: int, width: int):
+    """Nearest, so a moving actor is not blended with a static neighbor."""
+    if velocity is None:
+        return None
+    return F.interpolate(velocity.unsqueeze(0), size=(height, width), mode="nearest").squeeze(0)
+
+
+def _resize_instance(instance, height: int, width: int):
+    if instance is None:
+        return None
+    resized = F.interpolate(
+        instance.float().unsqueeze(0).unsqueeze(0),
+        size=(height, width),
+        mode="nearest",
+    )
+    return resized.squeeze(0).squeeze(0).to(dtype=instance.dtype)
 
 
 def _resize_segmentation(segmentation, height: int, width: int):

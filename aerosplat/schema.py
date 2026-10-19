@@ -70,6 +70,11 @@ class CameraFrame:
     # Flare-off render paired with ``image`` (the flare-on observation).
     # Absent means the image is the only photometric target.
     clean_image: Tensor | None = None
+    # Flight-frame velocity in m/s, ``[3, H, W]``. 0 is background or a
+    # static surface. Synthetic episodes write this from logged actor poses.
+    velocity: Tensor | None = None
+    # Per-pixel actor id, ``[H, W]``. 0 is background. Not a segmentation palette.
+    instance: Tensor | None = None
 
     def __post_init__(self) -> None:
         image = torch.as_tensor(self.image, dtype=torch.float32).contiguous()
@@ -109,6 +114,22 @@ class CameraFrame:
                     f"!= image {(3, height, width)}"
                 )
             self.clean_image = clean
+        if self.velocity is not None:
+            velocity = torch.as_tensor(self.velocity, dtype=torch.float32).contiguous()
+            if tuple(velocity.shape) != (3, height, width):
+                raise ValueError(
+                    f"{self.name}: velocity must be [3, H, W], got {tuple(velocity.shape)}"
+                )
+            if not torch.isfinite(velocity).all():
+                raise ValueError(f"{self.name}: velocity contains non-finite values")
+            self.velocity = velocity
+        if self.instance is not None:
+            instance = torch.as_tensor(self.instance, dtype=torch.long).contiguous()
+            if tuple(instance.shape) != (height, width):
+                raise ValueError(
+                    f"{self.name}: instance must be [H, W], got {tuple(instance.shape)}"
+                )
+            self.instance = instance
         if self.sync not in {"nearest", "interpolated", "clamped", "exact"}:
             raise ValueError(f"unknown sync state {self.sync!r}")
         if not (self.timestamp == self.timestamp and self.query_timestamp == self.query_timestamp):

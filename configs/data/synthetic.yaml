@@ -1,0 +1,14 @@
+# @package data
+# A shard written by scripts/generate_synthetic.py.
+# Point data.root at one shard directory (the folder that contains dataset.json).
+source: canonical
+root: data/synthetic/shard_00000_00
+load_depth: true
+load_segmentation: true
+sync:
+  # The generator pauses the sim and grabs every camera at one clock, so the
+  # timestamps match. nearest is the right policy. interpolate_pose also works.
+  policy: nearest
+  reference_camera: front
+  max_image_dt: 0.02
+  require_all_cameras: true

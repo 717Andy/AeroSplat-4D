@@ -196,6 +196,13 @@ root/<scene>/<camera>/depth/000000.npy
 `frames.jsonl` holds `timestamp` (seconds), `K`, and world-to-camera `R`, `t` in the
 flight frame. See `docs/ARCHITECTURE.md` for that frame.
 
+Optional keys `segmentation` and `clean_image` point at a segmentation PNG and
+a flare-off RGB. A recording that omits them loads as before. A synthetic shard
+also drops `dynamics.json`, `sun.json`, and `scene/wires.json` next to
+`dataset.json`, and per-camera `velocity/`, `instance/`, and `wire_coverage/`
+arrays. `data=synthetic` points `data.root` at one shard. The generator and
+the Windows steps are in `docs/SYNTHETIC.md`.
+
 ## Geometry pretraining (Phase 2)
 
 These three are not the 4-camera training rig. They supervise the ViT and the

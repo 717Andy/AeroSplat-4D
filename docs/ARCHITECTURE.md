@@ -501,11 +501,14 @@ does not supervise glare.
 `λ3` and `λ5` are starting points, not numbers Andy set. SSIM uses a Gaussian
 window, `C1=0.01²`, `C2=0.03²`, reflect padding, images in `[0, 1]`.
 
-An optional `λ_velocity` (default 0) is mean squared error against
-`MultiCameraSample.gt_velocity`, a single flight-frame m/s vector. Build it
-from two logged actor origins with `velocity_from_positions`. Cosys-AirSim and
-Colosseum expose those origins as `simGetObjectPose`. The capture scripts do
-not write them yet; the loss is ready when a recording does.
+An optional `λ_velocity` (default 0) is mean squared error against a
+flight-frame m/s target. `scripts/generate_synthetic.py` logs every actor pose
+per frame and writes two targets. Per-pixel velocity maps are sampled at each
+Gaussian's pixel and are the multi-actor target: background is 0, a moving
+actor is that actor. `MultiCameraSample.gt_velocity` is set only when exactly
+one actor is moving, because that vector is broadcast onto every slot.
+`velocity_from_positions` is the same finite difference the generator uses.
+The older capture scripts still do not write actor velocities.
 
 ## Rasterizer
 

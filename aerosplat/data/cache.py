@@ -15,6 +15,7 @@ from aerosplat.geometry.occupancy import (
     fuse_occupancy,
     grid_around_point,
 )
+from aerosplat.geometry.wires import load_wires, stamp_polylines, wires_path_for
 from aerosplat.schema import MultiCameraSample
 
 # A 200³ uint8 volume is 8 MB. Larger than that, the fine wire crop should shrink.
@@ -35,6 +36,9 @@ class CacheConfig:
     wire_colors: tuple[tuple[int, int, int], ...] = ()
     wire_voxel_size: float = 0.02
     wire_extent_m: float = 4.0
+    # Directory of a synthetic shard, or a wires.json file. Empty skips the
+    # analytic cable stamp. Depth hits still mark wires when ids or colors match.
+    wire_polylines: Path | None = None
 
     @classmethod
     def from_hydra(cls, cfg) -> CacheConfig:
@@ -53,6 +57,7 @@ class CacheConfig:
             wire_colors=colors,  # type: ignore[arg-type]
             wire_voxel_size=float(getattr(cache, "wire_voxel_size", 0.02)),
             wire_extent_m=float(getattr(cache, "wire_extent_m", 4.0)),
+            wire_polylines=_polyline_path(getattr(cache, "wire_polylines", None)),
         )
 
 
@@ -146,6 +151,17 @@ def build_occupancy(
     )
     grid.timestamp = sample.timestamp
     grid.scene_id = sample.scene_id
+    if config.wire_polylines is not None:
+        spans = load_wires(wires_path_for(config.wire_polylines, sample.scene_id))
+        if spans:
+            assert center is not None
+            stamp_polylines(
+                grid,
+                spans,
+                center=center,
+                fine_voxel_size=config.wire_voxel_size,
+                fine_extent_m=config.wire_extent_m,
+            )
     if grid.wire_points is not None and len(grid.wire_points) > 0 and config.wire_voxel_size > 0:
         fine_origin, fine_dims = grid_around_point(
             center,
@@ -158,9 +174,11 @@ def build_occupancy(
                 f"wire fine grid {fine_dims} has {cells} cells. "
                 "Shrink cache.wire_extent_m or raise cache.wire_voxel_size."
             )
-        grid.wire_fine = _rasterize_points(
-            grid.wire_points, fine_origin, config.wire_voxel_size, fine_dims
-        )
+        raster = _rasterize_points(grid.wire_points, fine_origin, config.wire_voxel_size, fine_dims)
+        if grid.wire_fine is None:
+            grid.wire_fine = raster
+        elif grid.wire_fine.shape == raster.shape:
+            grid.wire_fine = np.maximum(grid.wire_fine, raster)
         grid.wire_fine_origin = fine_origin
         grid.wire_fine_voxel_size = float(config.wire_voxel_size)
     return grid
@@ -206,12 +224,19 @@ def _rasterize_points(points, origin, voxel_size, dims) -> np.ndarray:
     return grid
 
 
+def _polyline_path(value) -> Path | None:
+    if value is None or value in {"", "null"}:
+        return None
+    return Path(str(value))
+
+
 def _wire_tag(config: CacheConfig) -> str:
-    if not config.wire_ids and not config.wire_colors:
+    if not config.wire_ids and not config.wire_colors and config.wire_polylines is None:
         return ""
     text = (
         f"{config.wire_ids}|{config.wire_colors}|"
-        f"{config.wire_voxel_size:.4f}|{config.wire_extent_m:.2f}"
+        f"{config.wire_voxel_size:.4f}|{config.wire_extent_m:.2f}|"
+        f"{config.wire_polylines}"
     )
     digest = hashlib.sha1(text.encode("utf-8")).hexdigest()[:8]
     return f"_wire{digest}"

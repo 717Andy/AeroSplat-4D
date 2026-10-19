@@ -29,8 +29,9 @@ aerosplat/          package
   geometry/         poses, unprojection, voxelization, software raycast
   models/           ViT, plane-sweep lift, splat heads, rasterizer, losses
   capture/          AirSim-family rig capture (Cosys-AirSim, Colosseum) and render benchmark
+  synth/            scenario YAML, catenary cables, mock and live episode capture
   vis/              multi-camera alignment check
-configs/            Hydra configs (data + rig groups)
+configs/            Hydra configs (data, rig, and scenario groups)
 fixtures/tiny_rig/  synthetic 4-camera recording, no download
 scripts/            fixture, capture, cache, sanity
 tests/              CPU tests
@@ -103,6 +104,19 @@ python scripts/prepare_cache.py data=tartanair data.root=/path/to/P000 --limit 2
 ```
 
 Hydra overrides use the same `data=` and `rig=` groups as `configs/`.
+
+## Synthetic episodes
+
+`scripts/generate_synthetic.py` writes the canonical recording plus actor
+velocity, wire polylines, a per-frame sun vector, and a flare-off frame.
+Colosseum is the default. `--simulator cosys` selects Cosys-AirSim. `--mock`
+needs no Unreal and is the first check. The Windows steps for an MSI Vector
+17 HX, then `scripts/train.py` on that shard, are in `docs/SYNTHETIC.md`.
+
+```bash
+python scripts/generate_synthetic.py --scenario configs/scenario/urban_corridor.yaml --output data/synthetic --episodes 1 --frames 4 --mock
+python scripts/train.py data=synthetic data.root=data/synthetic/shard_00000_00 model=vit_tiny model.img_size=32 train.steps=2 train.device=cpu train.backend=reference cache.wire_polylines=data/synthetic/shard_00000_00
+```
 
 ## Roadmap
 

@@ -64,6 +64,7 @@ def build_settings(
     simulator: str = "colosseum",
     *,
     record_segmentation: bool = False,
+    origin_geopoint: dict | None = None,
 ) -> dict:
     """``settings.json`` for ``simulator``.
 
@@ -120,6 +121,15 @@ def build_settings(
             "Cameras": cameras,
         }
     }
+    if origin_geopoint is not None:
+        # The sun model in the level uses this point. Synthetic episodes set
+        # it to the scenario location so the rendered sun and the ephemeris
+        # share a latitude and longitude.
+        settings["OriginGeopoint"] = {
+            "Latitude": float(origin_geopoint["latitude_deg"]),
+            "Longitude": float(origin_geopoint["longitude_deg"]),
+            "Altitude": float(origin_geopoint.get("altitude_m", 0.0)),
+        }
     return settings
 
 

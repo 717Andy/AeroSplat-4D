@@ -45,6 +45,7 @@ from aerosplat.models.pretrain import prepare_rig
 from aerosplat.models.rasterizer import GaussianRasterizer
 from aerosplat.models.relight import RelightHead, composite_glare, glare_for_cameras
 from aerosplat.schema import MultiCameraSample
+from aerosplat.synth.velocity import slot_velocity_from_maps
 
 
 class SplatTrainer(nn.Module):
@@ -540,6 +541,12 @@ def _step(
         volume = _float_volume(volume)
         occ_logits = volume.occupancy_logits
         wire_logits = volume.wire_logits
+    gt_velocity = None if batch["gt_velocity"] is None else batch["gt_velocity"].to(device)
+    mapped = _velocity_maps(cloud, cameras)
+    if mapped is not None:
+        # Per-pixel maps supervise static background as 0 and each actor as
+        # its own velocity. A single broadcast vector cannot do both.
+        gt_velocity = mapped
     result = composite_loss(
         rendered,
         images,
@@ -550,7 +557,7 @@ def _step(
         occ_logits=occ_logits,
         occ_target=occ_target,
         occ_known=occ_known,
-        gt_velocity=None if batch["gt_velocity"] is None else batch["gt_velocity"].to(device),
+        gt_velocity=gt_velocity,
         glare=glare,
         glare_target=glare_target or None,
         glare_mask=glare_mask or None,
@@ -644,6 +651,8 @@ def _views_from_collated(collated: dict) -> tuple[dict[str, Tensor], dict[str, d
             "height": int(camera["image"].shape[-2]),
             "width": int(camera["image"].shape[-1]),
         }
+        if "velocity" in camera:
+            cameras[name]["velocity"] = camera["velocity"]
     return images, cameras
 
 
@@ -731,6 +740,13 @@ def _flare_augmenter(cfg) -> FlareAugmenter | None:
         library,
         probability=float(getattr(cfg.train, "flare_prob", 0.5)),
     )
+
+
+def _velocity_maps(cloud, cameras):
+    maps = {name: camera["velocity"] for name, camera in cameras.items() if "velocity" in camera}
+    if len(maps) != len(cameras):
+        return None
+    return slot_velocity_from_maps(cloud, maps)
 
 
 def _known_glare(batch, images, device):

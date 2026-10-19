@@ -52,6 +52,9 @@ def collate_samples(batch: list[MultiCameraSample]) -> dict[str, Any]:
         cleans = [frame.clean_image for frame in frames]
         if all(image is not None for image in cleans):
             packed["clean_image"] = torch.stack(cleans, dim=0)
+        velocities = [frame.velocity for frame in frames]
+        if all(velocity is not None for velocity in velocities):
+            packed["velocity"] = torch.stack(velocities, dim=0)
         cameras[name] = packed
     return {
         "scene_id": [sample.scene_id for sample in batch],

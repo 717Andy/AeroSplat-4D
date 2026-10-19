@@ -15,7 +15,7 @@ from aerosplat.data.flare import (
 from aerosplat.export import OccupancyOnnx, RelightOnnx, export_onnx
 from aerosplat.geometry.occupancy import OCCUPIED, OccupancyGrid, fuse_occupancy
 from aerosplat.geometry.sun import estimate_sun_from_image, sun_direction_enu, sun_in_camera
-from aerosplat.models.collision import query_collision
+from aerosplat.models.collision import query_collision, wire_direction_smoothness
 from aerosplat.models.losses import occupancy_bce
 from aerosplat.models.occupancy_head import OccupancyHead, OccupancyVolume
 from aerosplat.models.rasterizer import eval_sh
@@ -159,6 +159,15 @@ def test_occupancy_recalls_a_synthetic_thin_wire():
     assert recall >= 0.8
     assert float(probability[0, 0, 0, 0]) <= 0.5
     assert float(loss.detach()) <= first + 1e-4
+
+
+def test_wire_direction_smoothness_uses_the_channel_axis():
+    logits = torch.zeros(1, 4, 5, 6)
+    direction = torch.zeros(1, 3, 4, 5, 6)
+    direction[:, 0] = 1.0
+    loss = wire_direction_smoothness(logits, direction)
+    assert torch.isfinite(loss)
+    assert float(loss) == pytest.approx(0.0, abs=1e-6)
 
 
 def test_collision_query_on_a_known_box_and_a_known_cable():

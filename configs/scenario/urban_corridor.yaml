@@ -1,0 +1,115 @@
+# Synthetic episode for the 4-camera UAM rig.
+# Altitudes are flight-frame ENU meters (Z up), so 80 is 80 m above the map origin.
+# Colosseum is the default simulator. Pass --simulator cosys for Cosys-AirSim.
+schema: aerosplat.scenario.v1
+name: urban_corridor
+simulator: colosseum
+map: Blocks
+# Leave false until the level is already open. simLoadLevel restarts the map.
+autoload_map: false
+seed: 0
+rig: uam_quad
+
+location:
+  name: chicago
+  latitude_deg: 41.8781
+  longitude_deg: -87.6298
+  altitude_m: 180
+
+# 14:00Z on 21 June is mid-morning in Chicago, sun in the east.
+# The sweep runs the clock forward so the sun moves during the episode.
+# yaw: toward_sun points the nose (and the front camera) at that sun.
+time:
+  start: "2026-06-21T14:00:00Z"
+  end: "2026-06-21T18:00:00Z"
+
+weather:
+  rain: 0.0
+  road_wetness: 0.0
+  snow: 0.0
+  road_snow: 0.0
+  maple_leaf: 0.0
+  road_leaf: 0.0
+  dust: 0.0
+  fog: 0.05
+
+flight:
+  frames: 20
+  frame_rate_hz: 10
+  speed_mps: 8
+  yaw: toward_sun
+  waypoints_enu:
+    - [0.0, 0.0, 80.0]
+    - [80.0, 0.0, 90.0]
+    - [160.0, 20.0, 70.0]
+
+actors:
+  - name: escort
+    kind: drone
+    asset: Cube
+    segmentation_id: 10
+    speed_mps: 6
+    scale_m: [1.2, 1.2, 0.4]
+    waypoints_enu:
+      - [40.0, 5.0, 75.0]
+      - [140.0, 15.0, 85.0]
+  - name: gull
+    kind: bird
+    asset: Sphere
+    segmentation_id: 11
+    speed_mps: 12
+    scale_m: [0.4, 0.4, 0.2]
+    waypoints_enu:
+      - [30.0, 8.0, 72.0]
+      - [110.0, -4.0, 78.0]
+  - name: van
+    kind: vehicle
+    asset: Cube
+    segmentation_id: 12
+    speed_mps: 10
+    scale_m: [4.5, 1.8, 1.6]
+    waypoints_enu:
+      - [0.0, 25.0, 0.8]
+      - [180.0, 25.0, 0.8]
+
+wires:
+  segmentation_id: 250
+  asset: Cube
+  spans:
+    - name: feeder
+      kind: power_line
+      start_enu: [-10.0, -20.0, 16.0]
+      end_enu: [90.0, -18.0, 16.0]
+      sag_m: 2.0
+      diameter_m: 0.02
+      samples: 24
+    - name: crane
+      kind: crane_cable
+      start_enu: [120.0, 12.0, 35.0]
+      end_enu: [128.0, 14.0, 6.0]
+      sag_m: 0.4
+      diameter_m: 0.03
+      samples: 16
+
+glare:
+  # auto: toggle Unreal lens flare when the RPC allows it, otherwise composite
+  # a sun-aligned blob onto a copy of the clean frame.
+  mode: auto
+
+capture:
+  supersample: 1
+  pause_step: true
+  record_wire_visibility: true
+
+randomization:
+  enabled: false
+  altitude_m: [30, 300]
+  speed_mps: [4, 18]
+  fog: [0.0, 0.35]
+  hour_utc: [7, 18]
+  wire_diameter_m: [0.01, 0.05]
+  wire_sag_m: [0.4, 3.0]
+  lateral_offset_m: [-15, 15]
+
+output:
+  shard_frames: 100
