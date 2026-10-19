@@ -1,4 +1,4 @@
-"""Model interfaces. Phase 2 is the lifter. Phase 3 packs the cloud. Phase 4 renders it."""
+"""Model interfaces. Phase 5 adds glare, occupancy, and the collision query."""
 
 from aerosplat.models.backbone import ViTBackbone
 from aerosplat.models.factory import MultiViewLifter, build_lifter, build_model

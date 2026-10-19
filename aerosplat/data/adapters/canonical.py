@@ -120,9 +120,16 @@ def _read_camera(jsonl: Path, depth_kind: str) -> list[FrameRecord]:
         except json.JSONDecodeError as exc:
             raise DataError(f"{jsonl}:{line_no} is not valid JSON") from exc
         depth_rel = record.get("depth")
+        index = int(record["index"])
+        seg_rel = record.get("segmentation")
+        if not seg_rel:
+            candidate = Path("segmentation") / f"{index:06d}.png"
+            if (jsonl.parent / candidate).is_file():
+                seg_rel = str(candidate)
+        clean_rel = record.get("clean_image")
         frames.append(
             FrameRecord(
-                frame_index=int(record["index"]),
+                frame_index=index,
                 timestamp=float(record["timestamp"]),
                 image_path=jsonl.parent / record["image"],
                 depth_path=(jsonl.parent / depth_rel) if depth_rel else None,
@@ -130,6 +137,8 @@ def _read_camera(jsonl: Path, depth_kind: str) -> list[FrameRecord]:
                 R=np.asarray(record["R"], dtype=np.float64),
                 t=np.asarray(record["t"], dtype=np.float64),
                 depth_kind=depth_kind,
+                segmentation_path=(jsonl.parent / seg_rel) if seg_rel else None,
+                clean_image_path=(jsonl.parent / clean_rel) if clean_rel else None,
             )
         )
     if not frames:

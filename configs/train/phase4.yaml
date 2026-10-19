@@ -1,8 +1,9 @@
 # @package train
-# Phase 4 loop. Coefficients: λ1=0.8 and λ2=0.2 are decided. λ3..λ5 and τ_max
-# were unset in Andy's equations; the values below are the starting point
-# documented in docs/ARCHITECTURE.md. λ4 and λ_velocity stay 0 until Phase 5
-# and until a sim export provides actor velocities.
+# Phase 4 loop, with Phase 5 occupancy and glare weights turned on.
+# Coefficients: λ1=0.8 and λ2=0.2 are decided. λ3..λ5 and τ_max were unset
+# in Andy's equations; the values below are the starting point documented in
+# docs/ARCHITECTURE.md and docs/PHASE5.md. λ_velocity stays 0 until a sim
+# export provides actor velocities.
 seed: 0
 steps: 1000
 batch_size: 1
@@ -26,9 +27,13 @@ clip_grad: 1.0
 lambda_photo: 0.8
 lambda_ssim: 0.2
 lambda_temp: 1.0
-lambda_occ: 0.0
+lambda_occ: 0.1
 lambda_sparse: 0.01
 lambda_velocity: 0.0
+# Separation against a known flare (paired sim or a pasted Google flare).
+# glare_l1 keeps the layer dark outside that mask.
+lambda_glare: 0.1
+lambda_glare_l1: 0.02
 # Volume of the 0.2 m base-scale cube. The hinge is closed at init.
 tau_max: 0.008
 ssim_window: 11
@@ -36,6 +41,16 @@ occ_pos_weight: 1.0
 occ_focal_gamma: 0.0
 occ_reduction: mean
 occ_compute: false
+# Wire voxels are rare. A missed cable costs more than a missed facade.
+occ_wire_pos_weight: 8.0
+occ_wire_focal_gamma: 2.0
+# Local line prior (neighbor tangents) and point-to-line, folded into L_occ.
+occ_smooth_weight: 0.05
+occ_line_weight: 0.1
+# Directory of CC BY 4.0 flare PNGs. null leaves augmentation off so a seeded
+# overfit does not draw from an extra RNG.
+flare_root: null
+flare_prob: 0.5
 temp_depth_abs: 0.5
 temp_depth_rel: 0.1
 temp_max_search: 1.0

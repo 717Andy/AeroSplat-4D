@@ -104,7 +104,9 @@ def test_experiment_configs_select_the_laptop_and_ddp_recipes():
     default = load_config()
     assert default.train.lambda_photo == 0.8
     assert default.train.lambda_ssim == 0.2
-    assert default.train.lambda_occ == 0.0
+    assert default.train.lambda_occ == 0.1
+    assert default.train.lambda_glare == 0.1
+    assert default.train.lambda_glare_l1 == 0.02
     assert default.train.lambda_velocity == 0.0
     assert default.train.tau_max == 0.008
     small = load_config(config_name="experiment/laptop_8gb")

@@ -58,6 +58,18 @@ from torch import Tensor
 GAUSSIAN_DIM = 62
 
 
+def _exporting() -> bool:
+    """True while Torch is tracing or compiling a graph."""
+    if torch.jit.is_tracing() or torch.jit.is_scripting():
+        return True
+    onnx_export = getattr(torch.onnx, "is_in_onnx_export", None)
+    if callable(onnx_export) and onnx_export():
+        return True
+    compiler = getattr(torch, "compiler", None)
+    is_compiling = getattr(compiler, "is_compiling", None)
+    return bool(callable(is_compiling) and is_compiling())
+
+
 class GaussianLayout:
     XYZ = slice(0, 3)
     SCALE = slice(3, 6)
@@ -381,9 +393,11 @@ class GaussianCloud:
                 raise ValueError(f"{name} must be [{count}], got {tuple(tensor.shape)}")
         if tuple(self.uv.shape) != (count, 2):
             raise ValueError(f"uv must be [{count}, 2], got {tuple(self.uv.shape)}")
-        if not torch.isfinite(self.packed).all():
+        # ``.all()`` is a Python branch. ONNX tracing cannot take it, and a
+        # traced graph has no NaNs to reject. Eager construction still checks.
+        if not _exporting() and not torch.isfinite(self.packed).all():
             raise ValueError("packed Gaussians contain non-finite values")
-        if not torch.isfinite(self.wire_prob).all():
+        if not _exporting() and not torch.isfinite(self.wire_prob).all():
             raise ValueError("wire_prob contains non-finite values")
         if len(self.camera_order) == 0 and count != 0:
             raise ValueError("camera_order is empty but N is not")

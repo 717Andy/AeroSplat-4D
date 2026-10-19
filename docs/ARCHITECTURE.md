@@ -6,9 +6,9 @@ shared ViT and the plane-sweep lift that turns it into per-pixel features and
 flight-frame anchors. Phase 3 is the geometry, appearance, and dynamics heads,
 the fixed-budget wire allocator, and the slot layout the temporal loss indexes.
 The CUDA rasterizer binding is the Phase 4 training path. A pure-PyTorch
-reference splatter covers CPU tests. The glare head and the real occupancy
-head are still Phase 5. `L_occ` already runs against a one-logit placeholder
-and the Phase 1 cache, with weight 0.
+reference splatter covers CPU tests. Phase 5 adds the glare head, the
+occupancy head, and ONNX export. `L_occ` runs against the occupancy volume
+and the Phase 1 cache. The YAML default for `λ4` is 0.1.
 
 ```
 N camera frames (image, K, R|t, time, optional depth)
@@ -36,7 +36,7 @@ epipolar / frustum lift                         (Phase 2)
                                           supervised by the cache
                 |
                 v
-        relight head (consumes SH, predicts a glare residual)     (Phase 5)
+        relight head (image glare layer; SH stays clean radiance)
 ```
 
 ## Flight frame
@@ -135,8 +135,8 @@ slices. Tests check that the names and the slices add up to 62.
 | Geometry | 3, implemented | xyz = anchor + tanh offset, log-scale, quat | yes, after activation |
 | Appearance | 3, implemented | opacity, SH residual | yes. DC is initialized from the pixel |
 | Dynamics | 3, implemented | velocity, zero at init | yes, not read by the rasterizer |
-| Relight | 5, stub | glare residual RGB | no; consumes SH |
-| Occupancy | 5, stub | local voxel logits | no; supervised by the cache |
+| Relight | 5 | additive glare RGB | no; consumes SH |
+| Occupancy | 5 | occupancy, wire logit, tangent, offset | no; supervised by the cache |
 
 `GaussianRasterizer(backend="auto")` uses the CUDA binding when
 `diff_gaussian_rasterization` imports and CUDA is available, and the reference
@@ -399,8 +399,10 @@ Closed:
    weighs the same as the nose and the value stays in `[0, 1]`.
 5. `L_occ` is mean BCE over known voxels (unknown masked). `pos_weight` and a
    focal gamma are config. The sum Andy wrote is `occ_reduction: sum`. The
-   head is a placeholder (one logit broadcast over the cache). `λ4 = 0`
-   until Phase 5. The real `OccupancyHead` still raises.
+   head is `OccupancyHead`: a coarse occupancy logit plus a wire logit,
+   tangent, and sub-voxel offset. `λ4` defaults to 0.1. The wire channel uses
+   a higher `pos_weight` and focal gamma. `PlaceholderOccupancyHead` remains
+   for the Phase 4 broadcast test.
 6. Logged actor velocity is an extra term, not one of the five. Weight 0
    unless `gt_velocity` is on the sample. `velocity_from_positions` turns two
    Cosys/Colosseum actor origins into m/s.
@@ -422,10 +424,18 @@ Still open:
 ### Relighting
 
 Degree-3 SH is 16 coefficients per color. That models low-frequency view-dependent
-color. A lens flare from the sun is a high-frequency, view-specific artifact. SH
-alone will not isolate it. The relight head has to predict an explicit residual.
-Raising the SH degree would also change the 48-channel block and the rasterizer
-binding, and it still would not be a flare model.
+color of the scene. A lens flare is light the lens added, so it is not a Gaussian
+radiance. `RelightHead` predicts a per-camera non-negative layer from the lift
+features, the camera-frame sun, and the pooled SH field. The composite is
+
+```
+rendered = clamp(clean_render + glare, 0, 1)
+```
+
+`L_photo` compares `rendered` to the observed frame, so the SH coefficients are
+trained as clean scene radiance. `clean_render` is the rasterizer output and is
+what a glare-free consumer should use. Details, the sun slider, and the flare
+loader are in `docs/PHASE5.md`.
 
 ## Occupancy cache
 
@@ -452,10 +462,16 @@ is stored so a later loss can up-weight cells that were seen by very few pixels.
 It is not a wire label. There are no semantic wire annotations in these datasets.
 
 A uniform grid fine enough for a crane cable (centimeters) over a flight corridor
-does not fit in memory. The cache is a local crop on purpose. Wire-scale
-supervision is an open Phase 5 problem: smaller local crop, a 2D thin-structure
-channel, or a different primitive. The default 0.5 m voxels will not represent a
-cable. They exist so the cache API and the tests are real.
+does not fit in memory. The cache stays a local crop, and the network occupancy
+head stays on that coarse grid. When segmentation marks a pixel as a cable
+(`cache.wire_ids` or `cache.wire_colors`), the same fusion writes a wire channel
+on the coarse cells plus the 3D hit points. A second grid at `wire_voxel_size`
+(default 2 cm) over `wire_extent_m` (default 4 m) is stored only when those
+points exist and the volume stays under 8 million cells. The head does not
+predict that fine grid. It predicts a wire probability, a tangent, and a
+sub-voxel offset on the coarse cell, and the collision query measures distance
+to the line. The default 0.5 m voxels still will not *contain* a cable as a
+solid; they mark that a cable crosses the cell.
 
 ## Losses (Phase 4)
 
@@ -478,7 +494,10 @@ L_sparse = (1 / N) Σ_i  α_i * max(0, s_x s_y s_z - τ_max)
 Survivors are splats that are valid at `t`, land on a valid slot at `t+1`,
 are in front of the camera, and are not hidden by a closer surface.
 
-Defaults: `λ1=0.8`, `λ2=0.2`, `λ3=1`, `λ4=0`, `λ5=0.01`, `τ_max=0.008`.
+Defaults: `λ1=0.8`, `λ2=0.2`, `λ3=1`, `λ4=0.1`, `λ5=0.01`, `τ_max=0.008`.
+`λ_glare=0.1` and `λ_glare_l1=0.02` sit beside Andy's five. They are zero in
+`LossWeights()` unless a caller sets them, so a unit test that omits weights
+does not supervise glare.
 `λ3` and `λ5` are starting points, not numbers Andy set. SSIM uses a Gaussian
 window, `C1=0.01²`, `C2=0.03²`, reflect padding, images in `[0, 1]`.
 
@@ -506,13 +525,14 @@ PyTorch wheel, does not compile the extension, and renders tests with
 | 2 ViT and 2D-to-3D lift | this tree | shared ViT, pose tokens, plane-sweep lift, depth pretrain |
 | 3 Splat parameter heads | this tree | geometry, appearance, dynamics, wire slots, pack into `[B, N, 62]` |
 | 4 Rasterizer and losses | this tree | CUDA rasterizer training, photometric, reprojected temporal, sparsity, occupancy placeholder |
-| 5 Relight, occupancy, export | occupancy cache only | glare head, occupancy head, ONNX/TensorRT |
+| 5 Relight, occupancy, export | this tree | glare head, occupancy and collision, ONNX/TensorRT |
 
 Sub-millisecond inference for a ViT over four high-resolution images plus a
 rasterizer is not a credible onboard target. A control-rate budget (on the order
 of 10–30 Hz, and only after the model exists) is the number worth measuring.
-`GET /api/v1/health` in the spec can report that measurement later. The FastAPI
-and React workbench are out of scope for Phase 1.
+The occupancy collision query on the predicted grid is the part that can be
+sub-millisecond; see `docs/PHASE5.md`. `GET /api/v1/health` in the spec can
+report that measurement later. The FastAPI and React workbench are out of scope.
 
 ## Spec notes
 
@@ -525,13 +545,16 @@ These are disagreements with the attached spec, not silent edits.
 2. "Lower bound on scale" contradicts `τ_max` and contradicts microscopic
    Gaussians. Phase 3 caps wire volume anisotropically (two thin axes, one
    long axis) and keeps only a numerical floor. See Phase 3 above.
-3. Degree-3 SH does not isolate lens flare. The relight head has to be a
-   separate residual.
-4. Unweighted occupancy BCE does not preferentially punish missed wires.
+3. Degree-3 SH does not isolate lens flare. The relight head is an additive
+   image-space layer. SH stays clean radiance. See `docs/PHASE5.md`.
+4. Unweighted occupancy BCE does not preferentially punish missed wires. The
+   wire channel uses `occ_wire_pos_weight` (default 8) and focal gamma 2.
 5. Depth supervision is a surface plus free space along the ray, not a solid
    building. Unknown voxels must be masked.
 6. A flight-corridor voxel grid cannot be both cable-thin and memory-bounded.
-   The cache is local. Wire resolution is unsolved.
+   The cache is local. The network stays coarse and represents a cable as a
+   line inside the cell. A centimeter grid is ground truth only, and only
+   around wire hits.
 7. `B` is a batch of timesteps, not "the video frame sequence" as one axis.
 8. Velocity units were unspecified. They are m/s in the world frame.
 9. The loss equations were images in the PDF. Andy's text form is what Phase 4

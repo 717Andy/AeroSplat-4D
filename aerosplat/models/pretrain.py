@@ -13,6 +13,7 @@ It is a smoke test of the graph, not a trained model.
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 
 import torch
 import torch.nn.functional as F
@@ -21,7 +22,7 @@ from torch import Tensor
 from aerosplat.data.transforms import resize_sample
 from aerosplat.models.factory import build_lifter
 from aerosplat.models.lift import LiftedGeometry
-from aerosplat.schema import CameraFrame, MultiCameraSample
+from aerosplat.schema import MultiCameraSample
 
 
 def prepare_rig(sample: MultiCameraSample, size: int, patch_size: int) -> MultiCameraSample:
@@ -41,27 +42,20 @@ def prepare_rig(sample: MultiCameraSample, size: int, patch_size: int) -> MultiC
     for name, frame in resized.cameras.items():
         image = F.pad(frame.image, (0, pad_w, 0, pad_h))
         depth = None if frame.depth is None else F.pad(frame.depth, (0, pad_w, 0, pad_h))
-        cameras[name] = CameraFrame(
-            name=name,
+        segmentation = frame.segmentation
+        if segmentation is not None:
+            segmentation = F.pad(segmentation, (0, pad_w, 0, pad_h))
+        clean = frame.clean_image
+        if clean is not None:
+            clean = F.pad(clean, (0, pad_w, 0, pad_h))
+        cameras[name] = replace(
+            frame,
             image=image,
-            K=frame.K,
-            R=frame.R,
-            t=frame.t,
-            timestamp=frame.timestamp,
             depth=depth,
-            R_query=frame.R_query,
-            t_query=frame.t_query,
-            query_timestamp=frame.query_timestamp,
-            sync=frame.sync,
-            frame_index=frame.frame_index,
+            segmentation=segmentation,
+            clean_image=clean,
         )
-    return MultiCameraSample(
-        scene_id=resized.scene_id,
-        sample_index=resized.sample_index,
-        timestamp=resized.timestamp,
-        cameras=cameras,
-        gt_velocity=resized.gt_velocity,
-    )
+    return replace(resized, cameras=cameras)
 
 
 def batch_from_sample(

@@ -17,3 +17,9 @@ cache:
   max_depth: 40.0
   min_depth: 0.05
   stride: 1
+  # Segmentation labels or RGB colors that mean "cable". Empty skips the
+  # wire class. The fine grid is ground truth only; the network stays coarse.
+  wire_ids: []
+  wire_colors: []
+  wire_voxel_size: 0.02
+  wire_extent_m: 4.0

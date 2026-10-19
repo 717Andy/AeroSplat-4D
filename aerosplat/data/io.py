@@ -27,6 +27,28 @@ def save_rgb(path: Path, rgb_hwc: np.ndarray) -> None:
     Image.fromarray(arr, mode="RGB").save(path)
 
 
+def load_segmentation(path: Path) -> np.ndarray:
+    """Integer labels ``[H, W]`` or RGB ``[3, H, W]`` uint8.
+
+    ``.npy`` arrays are returned as labels when they are rank-2 and as RGB
+    when they are rank-3. A palette PNG (mode RGB or RGBA) stays RGB so wire
+    colors can be matched. A single-channel PNG is an id map.
+    """
+    path = Path(path)
+    if path.suffix.lower() == ".npy":
+        array = np.asarray(np.load(path))
+        if array.ndim == 2:
+            return array.astype(np.int64)
+        if array.ndim == 3 and array.shape[-1] == 3:
+            return np.transpose(array.astype(np.uint8), (2, 0, 1))
+        raise ValueError(f"segmentation {path} has shape {array.shape}")
+    with Image.open(path) as img:
+        if img.mode in {"L", "I", "I;16"}:
+            return np.asarray(img, dtype=np.int64)
+        rgb = np.asarray(img.convert("RGB"), dtype=np.uint8)
+    return np.transpose(rgb, (2, 0, 1))
+
+
 def load_depth(path: Path, *, png_scale: float = 1000.0) -> np.ndarray:
     """Load a depth map as float32 meters, shape (H, W).
 

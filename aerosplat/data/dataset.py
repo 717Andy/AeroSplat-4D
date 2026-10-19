@@ -9,7 +9,7 @@ import torch
 from torch.utils.data import Dataset
 
 from aerosplat.data.errors import DataError
-from aerosplat.data.io import load_depth, load_rgb
+from aerosplat.data.io import load_depth, load_rgb, load_segmentation
 from aerosplat.data.records import FrameRecord, SyncConfig, sync_config_from_dict
 from aerosplat.data.sync import SyncedStamp, synchronize
 from aerosplat.schema import CameraFrame, MultiCameraSample
@@ -33,12 +33,14 @@ class MultiCameraDataset(Dataset):
         *,
         load_depth: bool = True,
         png_depth_scale: float = 1000.0,
+        load_segmentation: bool = False,
     ) -> None:
         if not scenes:
             raise DataError("dataset has no scenes")
         self.sync = sync
         self.load_depth = load_depth
         self.png_depth_scale = png_depth_scale
+        self.load_segmentation = load_segmentation
         self._index: list[SyncedStamp] = []
         for scene_id, streams in scenes.items():
             self._index.extend(synchronize(scene_id, streams, sync))
@@ -67,6 +69,12 @@ class MultiCameraDataset(Dataset):
                 if frame.depth_kind == "euclidean":
                     depth_np = _euclidean_to_planar(depth_np, frame.K)
                 depth = torch.from_numpy(np.ascontiguousarray(depth_np))
+            segmentation = None
+            if self.load_segmentation and frame.segmentation_path is not None:
+                segmentation = torch.from_numpy(load_segmentation(frame.segmentation_path))
+            clean_image = None
+            if frame.clean_image_path is not None and frame.clean_image_path.is_file():
+                clean_image = torch.from_numpy(load_rgb(frame.clean_image_path))
             cameras[name] = CameraFrame(
                 name=name,
                 image=image,
@@ -80,6 +88,8 @@ class MultiCameraDataset(Dataset):
                 query_timestamp=stamp.timestamp,
                 sync=match.sync,
                 frame_index=frame.frame_index,
+                segmentation=segmentation,
+                clean_image=clean_image,
             )
         return MultiCameraSample(
             scene_id=stamp.scene_id,
@@ -129,6 +139,13 @@ def build_dataset(cfg):
         return load_matrixcity(root, cfg.data)
     sync = sync_config_from_dict(dict(cfg.data.sync))
     load_depth_flag = bool(cfg.data.load_depth)
+    load_segmentation = bool(_cfg_get(cfg.data, "load_segmentation", False))
+    cache = _cfg_get(cfg, "cache", None)
+    if cache is not None:
+        wire_ids = list(_cfg_get(cache, "wire_ids", []) or [])
+        wire_colors = list(_cfg_get(cache, "wire_colors", []) or [])
+        if wire_ids or wire_colors:
+            load_segmentation = True
     if source == "canonical":
         from aerosplat.data.adapters.canonical import read_canonical
 
@@ -160,4 +177,21 @@ def build_dataset(cfg):
             f"unknown data.source {source!r}. Expected canonical, airsim_raw, tartanair, "
             "aerial_megadepth, tartanair_v2, or matrixcity."
         )
-    return MultiCameraDataset(scenes, sync, load_depth=load_depth_flag)
+    return MultiCameraDataset(
+        scenes,
+        sync,
+        load_depth=load_depth_flag,
+        load_segmentation=load_segmentation,
+    )
+
+
+def _cfg_get(node, key: str, default):
+    if node is None:
+        return default
+    try:
+        if key not in node:
+            return default
+        value = node[key]
+    except TypeError:
+        value = getattr(node, key, default)
+    return default if value is None else value
