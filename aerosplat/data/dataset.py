@@ -8,6 +8,7 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
+from aerosplat.data.dynamics import DynamicsTable, load_dynamics, velocity_at
 from aerosplat.data.errors import DataError
 from aerosplat.data.io import load_depth, load_rgb, load_segmentation
 from aerosplat.data.records import FrameRecord, SyncConfig, sync_config_from_dict
@@ -34,6 +35,7 @@ class MultiCameraDataset(Dataset):
         load_depth: bool = True,
         png_depth_scale: float = 1000.0,
         load_segmentation: bool = False,
+        dynamics: DynamicsTable | None = None,
     ) -> None:
         if not scenes:
             raise DataError("dataset has no scenes")
@@ -41,6 +43,7 @@ class MultiCameraDataset(Dataset):
         self.load_depth = load_depth
         self.png_depth_scale = png_depth_scale
         self.load_segmentation = load_segmentation
+        self.dynamics = dynamics
         self._index: list[SyncedStamp] = []
         for scene_id, streams in scenes.items():
             self._index.extend(synchronize(scene_id, streams, sync))
@@ -75,6 +78,7 @@ class MultiCameraDataset(Dataset):
             clean_image = None
             if frame.clean_image_path is not None and frame.clean_image_path.is_file():
                 clean_image = torch.from_numpy(load_rgb(frame.clean_image_path))
+            velocity, instance = _sidecar_maps(frame)
             cameras[name] = CameraFrame(
                 name=name,
                 image=image,
@@ -90,13 +94,42 @@ class MultiCameraDataset(Dataset):
                 frame_index=frame.frame_index,
                 segmentation=segmentation,
                 clean_image=clean_image,
+                velocity=velocity,
+                instance=instance,
             )
+        latitude = longitude = None
+        gt_velocity = None
+        if self.dynamics is not None:
+            latitude = self.dynamics.latitude_deg
+            longitude = self.dynamics.longitude_deg
+            vector = velocity_at(self.dynamics, stamp.scene_id, stamp.timestamp)
+            if vector is not None:
+                gt_velocity = torch.from_numpy(np.ascontiguousarray(vector))
         return MultiCameraSample(
             scene_id=stamp.scene_id,
             sample_index=index,
             timestamp=stamp.timestamp,
             cameras=cameras,
+            gt_velocity=gt_velocity,
+            latitude_deg=latitude,
+            longitude_deg=longitude,
         )
+
+
+def _sidecar_maps(frame: FrameRecord):
+    """Velocity ``[3,H,W]`` and instance ``[H,W]`` when the synthetic writer left them."""
+    camera_dir = frame.image_path.parent.parent
+    velocity_path = camera_dir / "velocity" / f"{frame.frame_index:06d}.npy"
+    instance_path = camera_dir / "instance" / f"{frame.frame_index:06d}.npy"
+    velocity = None
+    instance = None
+    if velocity_path.is_file():
+        array = np.load(velocity_path)
+        velocity = torch.from_numpy(np.ascontiguousarray(array, dtype=np.float32))
+    if instance_path.is_file():
+        array = np.load(instance_path)
+        instance = torch.from_numpy(np.ascontiguousarray(array))
+    return velocity, instance
 
 
 def _euclidean_to_planar(depth: np.ndarray, K: np.ndarray) -> np.ndarray:
@@ -150,6 +183,7 @@ def build_dataset(cfg):
         from aerosplat.data.adapters.canonical import read_canonical
 
         scenes = read_canonical(root)
+        dynamics = load_dynamics(root)
     elif source == "airsim_raw":
         from aerosplat.airsim_family import depth_kind_from_image_type
         from aerosplat.data.adapters.airsim import read_airsim_raw
@@ -182,6 +216,7 @@ def build_dataset(cfg):
         sync,
         load_depth=load_depth_flag,
         load_segmentation=load_segmentation,
+        dynamics=dynamics if source == "canonical" else None,
     )
 
 

@@ -48,12 +48,20 @@ def prepare_rig(sample: MultiCameraSample, size: int, patch_size: int) -> MultiC
         clean = frame.clean_image
         if clean is not None:
             clean = F.pad(clean, (0, pad_w, 0, pad_h))
+        velocity = frame.velocity
+        if velocity is not None:
+            velocity = F.pad(velocity, (0, pad_w, 0, pad_h))
+        instance = frame.instance
+        if instance is not None:
+            instance = F.pad(instance.float(), (0, pad_w, 0, pad_h)).to(dtype=instance.dtype)
         cameras[name] = replace(
             frame,
             image=image,
             depth=depth,
             segmentation=segmentation,
             clean_image=clean,
+            velocity=velocity,
+            instance=instance,
         )
     return replace(resized, cameras=cameras)
 

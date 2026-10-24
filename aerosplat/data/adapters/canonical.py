@@ -73,6 +73,14 @@ def write_canonical(
                     "R": np.asarray(frame["R"], dtype=np.float64).reshape(3, 3).tolist(),
                     "t": np.asarray(frame["t"], dtype=np.float64).reshape(3).tolist(),
                 }
+                if frame.get("segmentation") is not None:
+                    seg_rel = f"segmentation/{index:06d}.png"
+                    save_rgb(cam_dir / seg_rel, frame["segmentation"])
+                    record["segmentation"] = seg_rel
+                if frame.get("clean_image") is not None:
+                    clean_rel = f"clean/{index:06d}.png"
+                    save_rgb(cam_dir / clean_rel, frame["clean_image"])
+                    record["clean_image"] = clean_rel
                 lines.append(json.dumps(record))
             (cam_dir / "frames.jsonl").write_text("\n".join(lines) + "\n")
 

@@ -201,9 +201,10 @@ python scripts/benchmark_latency.py model=vit_tiny model.img_size=32 train.devic
    which matches a saturating sensor. A screen blend would keep more of the
    scene under a bright flare and would change both the photometric target
    and the pasted-flare composite.
-2. The brightest-pixel sun fails on white roofs and cloud decks. AirSim's
-   latitude column is still not copied onto the sample, so most recordings
-   take the image estimate even when the simulator knows the location.
+2. The brightest-pixel sun fails on white roofs and cloud decks. A synthetic
+   shard copies latitude, longitude, and a Unix timestamp onto the sample, and
+   the ephemeris wins for those recordings. Other recordings still omit the
+   location, and those still take the image estimate.
 3. The SH slider is an environment rotation, not a lighting solve. Glare has
    to be predicted again for a new sun. Degree 3 cannot represent a solar disk.
 4. A cell that contains both a facade and a cable is measured as the cable

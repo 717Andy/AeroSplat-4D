@@ -194,17 +194,26 @@ def wire_direction_smoothness(wire_logits: Tensor, direction: Tensor) -> Tensor:
     aligns directions where the head already believes there is a wire.
     """
     probability = torch.sigmoid(wire_logits).detach()
+    # ``wire_logits`` is ``[B, X, Y, Z]``. ``direction`` is ``[B, 3, X, Y, Z]``.
+    if direction.ndim != 5 or direction.shape[1] != 3:
+        raise ValueError(f"wire direction must be [B, 3, X, Y, Z], got {tuple(direction.shape)}")
+    if tuple(direction.shape[2:]) != tuple(probability.shape[1:]):
+        raise ValueError(
+            f"wire direction grid {tuple(direction.shape[2:])} != "
+            f"logits {tuple(probability.shape[1:])}"
+        )
     loss = wire_logits.new_zeros(())
     weight = wire_logits.new_zeros(())
     for axis in range(3):
-        dim = axis + 1
-        if direction.shape[dim] < 2:
+        spatial = axis + 1
+        if probability.shape[spatial] < 2:
             continue
-        left = direction.narrow(dim, 0, direction.shape[dim] - 1)
-        right = direction.narrow(dim, 1, direction.shape[dim] - 1)
+        channel_axis = axis + 2
+        left = direction.narrow(channel_axis, 0, direction.shape[channel_axis] - 1)
+        right = direction.narrow(channel_axis, 1, direction.shape[channel_axis] - 1)
         cosine = (left * right).sum(dim=1).clamp(-1.0, 1.0)
-        left_p = probability.narrow(dim, 0, probability.shape[dim] - 1)
-        right_p = probability.narrow(dim, 1, probability.shape[dim] - 1)
+        left_p = probability.narrow(spatial, 0, probability.shape[spatial] - 1)
+        right_p = probability.narrow(spatial, 1, probability.shape[spatial] - 1)
         pair = left_p * right_p
         loss = loss + ((1.0 - cosine) * pair).sum()
         weight = weight + pair.sum()
