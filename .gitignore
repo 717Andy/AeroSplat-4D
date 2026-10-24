@@ -11,6 +11,9 @@ build/
 outputs/
 *.npy
 !fixtures/**/*.npy
+!episodes/**/*.npy
+node_modules/
+web/dist/
 .venv/
 venv/
 .DS_Store
