@@ -52,6 +52,9 @@ include = ["aerosplat*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Pytest 9 imports tests without putting the repo root on sys.path.
+# The workbench suite (`pytest server/tests`) imports the `server` package.
+pythonpath = ["."]
 addopts = "-q"
 
 [tool.ruff]
